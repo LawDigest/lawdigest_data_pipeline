@@ -123,7 +123,7 @@ class DataFetcher:
 
         print("➡️  첫 페이지 요청하여 전체 데이터 개수 확인 중...")
         try:
-            response = requests.get(url, params=current_params)
+            response = requests.get(url, params=current_params, timeout=10)
             response.raise_for_status()
             if verbose:
                 print(response.content.decode('utf-8'))
@@ -152,7 +152,7 @@ class DataFetcher:
                 current_params[page_param] += 1
 
                 try:
-                    response = requests.get(url, params=current_params)
+                    response = requests.get(url, params=current_params, timeout=10)
                     response.raise_for_status()
                     data, _ = self._parse_response(response.content, format, mapper)
 
@@ -211,6 +211,8 @@ class DataFetcher:
         
         # **kwargs를 통해 받은 추가 인자를 params에 병합
         params.update(kwargs)
+        
+        verbose = kwargs.get('verbose', False)
 
         print(f"📌 [{_start_date} ~ {_end_date}] 의안 주요 내용 데이터 수집 시작...")
 
@@ -220,6 +222,7 @@ class DataFetcher:
             mapper=mapper,
             format='xml',
             all_pages=True,
+            verbose=verbose
         )
 
         if df_bills.empty:
@@ -369,6 +372,8 @@ class DataFetcher:
         
         # **kwargs를 통해 받은 추가 인자를 params에 병합
         params.update(kwargs)
+        
+        verbose = kwargs.get('verbose', False)
 
         print("\n📌 [국회의원 데이터 수집 시작]")
         start_time = time.time()
@@ -379,6 +384,7 @@ class DataFetcher:
             mapper=mapper,
             format='xml',
             all_pages=True,
+            verbose=verbose
         )
 
         end_time = time.time()
@@ -454,7 +460,7 @@ class DataFetcher:
             print("❌ [ERROR] 발의자 정보를 조회할 API Key가 설정되어 있지 않습니다.")
             return pd.DataFrame(columns=['billId', 'publicProposerIdList'])
 
-        url = 'https://open.assembly.go.kr/portal/openapi/BILLNPPPSR'
+        url = 'https://open.assembly.go.kr/portal/openapi/BILLINFOPPSR'
         mapper = self.mapper_open_xml
 
         bill_ids = (
@@ -526,6 +532,8 @@ class DataFetcher:
 
         aggregated = {}
 
+        verbose = kwargs.pop('verbose', False)
+
         for bill_id in tqdm(bill_ids, desc="발의자 수집", unit="건"):
             if ensure_entry(bill_id) is None:
                 tqdm.write(f"⚠️ [WARN] billId {bill_id} 값이 올바르지 않아 건너뜁니다.")
@@ -548,6 +556,7 @@ class DataFetcher:
                 mapper=mapper,
                 format='xml',
                 all_pages=True,
+                verbose=verbose
             )
 
             if df_tmp.empty:
@@ -677,11 +686,16 @@ class DataFetcher:
                 }
                 # **kwargs를 통해 받은 추가 인자를 params에 병합
                 params.update(kwargs)
+                
+                verbose = kwargs.get('verbose', False)
 
                 try:
                     response = requests.get(url, params=params, timeout=10)
 
                     if response.status_code == 200:
+                        if verbose:
+                            print(f"🔍 [VERBOSE] Response Content:\n{response.content.decode('utf-8')}")
+                            
                         root = ElementTree.fromstring(response.content)
                         items = root.findall(".//row")
 
@@ -697,10 +711,14 @@ class DataFetcher:
                         retries_for_date = max_retry # 성공 시 재시도 횟수 초기화
                     else:
                         print(f"❌ [ERROR] 응답 코드: {response.status_code} (📅 Date: {date_str}, 📄 Page {pageNo})")
+                        if verbose:
+                             print(f"🔍 [VERBOSE] Error Response:\n{response.text}")
                         retries_for_date -= 1
 
                 except Exception as e:
                     print(f"❌ [ERROR] 응답 처리 중 오류 발생: {str(e)}")
+                    if verbose and 'response' in locals():
+                         print(f"🔍 [VERBOSE] Exception Context:\n{response.text}")
                     retries_for_date -= 1
 
                 if retries_for_date <= 0:
@@ -766,10 +784,15 @@ class DataFetcher:
                 # **kwargs를 통해 받은 추가 인자를 params에 병합
                 params.update(kwargs)
                 
+                verbose = kwargs.get('verbose', False)
+                
                 try:
                     response = requests.get(url, params=params, timeout=10)
                     
                     if response.status_code == 200:
+                        if verbose:
+                            print(f"🔍 [VERBOSE] Response Content:\n{response.content.decode('utf-8')}")
+                            
                         root = ElementTree.fromstring(response.content)
                         head = root.find('head')
                         
