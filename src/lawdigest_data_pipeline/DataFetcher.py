@@ -988,6 +988,7 @@ class DataFetcher:
         for bill_id in tqdm(bill_ids_to_fetch, desc="정당별 투표 수집", unit="법안"):
             pageNo = 1
             max_retry_per_bill = 3
+            bill_data_count = 0
             
             while True:
                 params = {
@@ -1027,7 +1028,8 @@ class DataFetcher:
 
                         data = [{child.tag: child.text for child in row_elem} for row_elem in rows]
                         all_data.extend(data)
-                        tqdm.write(f"✅ [INFO] {bill_id} | 📄 Page {pageNo} | 📊 총 {len(all_data)} 개 데이터 수집됨.")
+                        bill_data_count += len(data)
+                        # tqdm.write(f"✅ [INFO] {bill_id} | 📄 Page {pageNo} | 📊 총 {len(all_data)} 개 데이터 수집됨.")
 
                         processing_count += 1
                         max_retry_per_bill = 3 # 성공 시 초기화
@@ -1049,6 +1051,8 @@ class DataFetcher:
                     break
 
                 pageNo += 1
+            
+            tqdm.write(f"✅ [INFO] {bill_id} | 📊 {bill_data_count} 개 데이터 수집됨.")
 
         # 데이터프레임 생성
         df_vote_individual = pd.DataFrame(all_data)
