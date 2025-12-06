@@ -550,14 +550,21 @@ class DataFetcher:
             # **kwargs를 통해 받은 추가 인자를 params에 병합
             params.update(kwargs)
 
+            # verbose 모드일 때 상위 5개 법안에 대해서만 응답 출력
+            current_verbose = verbose and (len(aggregated) < 5)
+
             df_tmp = self.fetch_data_generic(
                 url=url,
                 params=params,
                 mapper=mapper,
                 format='xml',
                 all_pages=True,
-                verbose=verbose
+                verbose=current_verbose
             )
+
+            if current_verbose and not df_tmp.empty:
+                 print(f"🔎 [VERBOSE] Bill {bill_id} Raw Data Sample (First row):")
+                 print(df_tmp.iloc[0].to_dict())
 
             if df_tmp.empty:
                 tqdm.write(f"⚠️ [WARN] billId {bill_id}에 대한 발의자 데이터를 찾을 수 없습니다.")
@@ -572,7 +579,10 @@ class DataFetcher:
                 target = ensure_entry(row_bill_id)
                 if target is None:
                     continue
-                proposer_role = normalize_str(row.get('PUBL_PROPOSER'))
+                proposer_role = normalize_str(
+                    row.get('PUBL_PROPOSER') 
+                    or row.get('REP_DIV')
+                )
                 proposer_code = normalize_str(
                     row.get('PPSR_CD')
                     or row.get('PUBL_PRPSR_CD')
@@ -629,11 +639,28 @@ class DataFetcher:
             ['billId', 'representativeProposerIdList', 'publicProposerIdList', 'ProposerName']
         ]
 
+        # 대표발의자가 비어있으면 공동발의자의 첫 번째 사람을 대표발의자로 간주 (법안 데이터 특성상 맨 앞이 대표발의자인 경우가 많음)
+        def fill_missing_representative(row):
+            if not row['representativeProposerIdList'] and row['publicProposerIdList']:
+                 # 첫번째 사람을 추가
+                 row['representativeProposerIdList'] = [row['publicProposerIdList'][0]]
+            return row
+
+        df_coactors = df_coactors.apply(fill_missing_representative, axis=1)
+
         filtered_count = len(df_coactors)
-        df_coactors = df_coactors[df_coactors['publicProposerIdList'].apply(bool)]
+        # 공동발의자가 있는 데이터만 남기기
+        valid_public_mask = df_coactors['publicProposerIdList'].apply(bool)
+        
+        # 제외되는 법안 확인
+        removed_df = df_coactors[~valid_public_mask]
+        
+        df_coactors = df_coactors[valid_public_mask]
         removed_count = filtered_count - len(df_coactors)
+        
         if removed_count > 0:
             print(f"⚠️ [INFO] 공동발의자 정보를 확보하지 못한 {removed_count}개 법안을 제외했습니다.")
+            print(f"   - 제외된 법안 ID: {removed_df['billId'].tolist()}")
 
         print(f"✅ [INFO] 발의자 정보 수집 완료. 총 {len(df_coactors)}개의 법안에 대한 데이터를 확보했습니다.")
 
