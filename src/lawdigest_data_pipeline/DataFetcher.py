@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 import json
 import re # fetch_bills_info (주석 해제 시) 대비
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 class DataFetcher:
     def __init__(self, url=None, filter_data=True):
@@ -28,6 +30,19 @@ class DataFetcher:
         self.df_bills = None
         self.df_lawmakers = None
         self.df_vote = None
+
+        # Session 및 Retry 설정
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,                   # 최대 재시도 횟수
+            backoff_factor=1,          # 재시도 간격 (0.5s, 1s, 2s...)
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False      # 상태 코드 에러는 response.raise_for_status()에서 처리
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
 
         # 열린국회정보(json) 매퍼
         self.mapper_open_json = {
@@ -123,7 +138,8 @@ class DataFetcher:
 
         print("➡️  첫 페이지 요청하여 전체 데이터 개수 확인 중...")
         try:
-            response = requests.get(url, params=current_params, timeout=10)
+            # Session 사용 및 timeout 증가 (10 -> 30)
+            response = self.session.get(url, params=current_params, timeout=30)
             response.raise_for_status()
             if verbose:
                 print(response.content.decode('utf-8'))
@@ -152,7 +168,8 @@ class DataFetcher:
                 current_params[page_param] += 1
 
                 try:
-                    response = requests.get(url, params=current_params, timeout=10)
+                    # Session 사용 및 timeout 증가 (10 -> 30)
+                    response = self.session.get(url, params=current_params, timeout=30)
                     response.raise_for_status()
                     data, _ = self._parse_response(response.content, format, mapper)
 
@@ -175,7 +192,7 @@ class DataFetcher:
         print(f"\n🎉 다운로드 완료! 총 {len(df)}개의 데이터를 수집했습니다. 📊")
         return df
         
-    def fetch_bills_data(self, start_date=None, end_date=None, age=None, start_ord=None, end_ord=None, **kwargs):
+    def fetch_bills_data(self, start_date=None, end_date=None, age=None, start_ord=None, end_ord=None, retry=2, **kwargs):
         """
         법안 주요 내용 데이터를 API에서 수집하는 함수.
         
@@ -185,6 +202,7 @@ class DataFetcher:
             age (str, optional): 대수. Defaults to AGE 환경변수.
             start_ord (str, optional): 검색 시작 대수. Defaults to age.
             end_ord (str, optional): 검색 종료 대수. Defaults to age.
+            retry (int, optional): 데이터 수집 실패 시 재시도 횟수. Defaults to 2.
             **kwargs: API 요청에 전달할 추가 매개변수.
         """
         # self.params.get() 대신 메서드 인자를 직접 사용
@@ -216,18 +234,31 @@ class DataFetcher:
 
         print(f"📌 [{_start_date} ~ {_end_date}] 의안 주요 내용 데이터 수집 시작...")
 
-        df_bills = self.fetch_data_generic(
-            url=url,
-            params=params, # <-- 지역 변수 params 전달
-            mapper=mapper,
-            format='xml',
-            all_pages=True,
-            verbose=verbose
-        )
+        attempts = 0
+        max_attempts = retry + 1
+        df_bills = pd.DataFrame()
+
+        while attempts < max_attempts:
+            attempts += 1
+            if attempts > 1:
+                print(f"🔄 [RETRY] 데이터 수집 재시도 중... ({attempts-1}/{retry})")
+                time.sleep(2) # 재시도 전 대기
+
+            df_bills = self.fetch_data_generic(
+                url=url,
+                params=params, # <-- 지역 변수 params 전달
+                mapper=mapper,
+                format='xml',
+                all_pages=True,
+                verbose=verbose
+            )
+
+            if not df_bills.empty:
+                break
 
         if df_bills.empty:
             print(
-                "⚠️ [WARNING] 수집된 데이터가 없습니다. API 응답을 확인하세요."
+                f"⚠️ [WARNING] {max_attempts}회 시도했으나 수집된 데이터가 없습니다. API 응답을 확인하세요."
             )
             # 빈 DF라도 캐시하고 반환
             self.df_bills = df_bills
