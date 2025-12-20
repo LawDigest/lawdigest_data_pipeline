@@ -7,8 +7,8 @@ import traceback
 # 프로젝트 루트 경로를 sys.path에 추가
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 
-from src.data_operations.WorkFlowManager import WorkFlowManager
-from src.data_operations.Notifier import Notifier
+from src.lawdigest_data_pipeline.WorkFlowManager import WorkFlowManager
+from src.lawdigest_data_pipeline.Notifier import Notifier
 
 def main():
     """

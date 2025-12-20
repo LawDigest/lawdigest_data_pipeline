@@ -11,14 +11,14 @@ from datetime import datetime, timedelta
 
 # --- 경로 설정 ---
 # 스크립트를 직접 실행할 때 'src' 디렉토리를 sys.path에 추가하여
-# 'lawdigest_ai'와 'data_operations' 모듈을 찾을 수 있도록 합니다.
+# 'lawdigest_ai'와 'lawdigest_data_pipeline' 모듈을 찾을 수 있도록 합니다.
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.abspath(os.path.join(current_dir, '..'))
 src_path = os.path.join(project_root, 'src')
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from data_operations.DatabaseManager import DatabaseManager
+from lawdigest_data_pipeline.DatabaseManager import DatabaseManager
 from lawdigest_ai import config as project_config
 from lawdigest_ai.embedding_generator import EmbeddingGenerator
 from lawdigest_ai.qdrant_manager import QdrantManager
