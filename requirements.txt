@@ -8,4 +8,6 @@ tqdm
 PyMySQL
 langchain
 langchain-community
+langchain-openai
+langchain-google-genai
 llama-index

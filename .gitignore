@@ -17,3 +17,6 @@ reports/
 .claude/
 .claude/settings.local.json
 airflow
+tests/result/gemini_test_result.csv
+tests/result/gemini_test_result.json
+tests/legacy/check_api_raw.py
