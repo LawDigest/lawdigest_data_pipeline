@@ -1,6 +1,7 @@
 import pandas as pd
 from IPython.display import clear_output
 from langchain_community.chat_models import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage
 import os
 from dotenv import load_dotenv
@@ -30,6 +31,7 @@ class AISummarizer:
 
         # ChatGPT model via Langchain
         self.api_key = os.environ.get("APIKEY_OPENAI")
+        self.gemini_api_key = os.environ.get("GEMINI_API_KEY")
 
         # 환경변수 로드
         load_dotenv()
@@ -39,9 +41,12 @@ class AISummarizer:
         if model is None:
             model = os.environ.get("TITLE_SUMMARIZATION_MODEL")
 
-        llm = ChatOpenAI(model=model, openai_api_key=self.api_key, temperature=1)
+        if model.lower().startswith("gemini"):
+            llm = ChatGoogleGenerativeAI(model=model, google_api_key=self.gemini_api_key, temperature=1)
+        else:
+            llm = ChatOpenAI(model=model, openai_api_key=self.api_key, temperature=1)
         
-        print("\n[AI 제목 요약 진행 중...]")
+        print(f"\n[AI 제목 요약 진행 중... (Model: {model})]")
         
         # 'briefSummary' 컬럼이 공백이 아닌 경우에만 요약문을 추출하여 해당 컬럼에 저장
         total = df_bills['briefSummary'].isnull().sum()
@@ -97,9 +102,12 @@ class AISummarizer:
         if model is None:
             model = os.environ.get("CONTENT_SUMMARIZATION_MODEL")
 
-        llm = ChatOpenAI(model=model, openai_api_key=self.api_key, temperature=1)
+        if model.lower().startswith("gemini"):
+            llm = ChatGoogleGenerativeAI(model=model, google_api_key=self.gemini_api_key, temperature=1)
+        else:
+            llm = ChatOpenAI(model=model, openai_api_key=self.api_key, temperature=1)
 
-        print("\n[AI 내용 요약 진행 중...]")
+        print(f"\n[AI 내용 요약 진행 중... (Model: {model})]")
 
         rows_to_process = df_bills[df_bills['gptSummary'].isnull()]
         total = len(rows_to_process)
