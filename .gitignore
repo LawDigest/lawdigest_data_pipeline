@@ -22,3 +22,5 @@ tests/legacy/check_api_raw.py
 airflow/logs
 airflow/docker-compose.yaml
 tests/*.ipynb
+tests/result
+tests/DataFecther_test.ipynb
