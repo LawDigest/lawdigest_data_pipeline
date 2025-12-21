@@ -81,10 +81,10 @@ class WorkFlowManager:
         }
         
         # 1. 데이터 받아오기
-        fetcher = DataFetcher(params)
+        fetcher = DataFetcher()
 
-        df_bills = fetcher.fetch_data('bills')
-        # bills_info_data = fetcher.fetch_data('bill_info')
+        df_bills = fetcher.fetch_bills_data(start_date=start_date, end_date=end_date, age=age)
+        # bills_info_data = fetcher.fetch_bills_info(start_date=start_date, end_date=end_date, age=age)
 
         # 2. 데이터 처리
         
@@ -221,8 +221,8 @@ class WorkFlowManager:
         print("\n[의원 데이터 수집 시작]")
 
         # 데이터 수집
-        fetcher = DataFetcher(params=None)
-        df_lawmakers = fetcher.fetch_data('lawmakers')
+        fetcher = DataFetcher()
+        df_lawmakers = fetcher.fetch_lawmakers_data()
 
         if df_lawmakers is None or df_lawmakers.empty:
             print("❌ [ERROR] 수집된 의원 데이터가 없습니다.")
@@ -316,8 +316,8 @@ class WorkFlowManager:
         }
 
         # 데이터 수집
-        fetcher = DataFetcher(params)
-        df_stage = fetcher.fetch_data('bill_timeline')
+        fetcher = DataFetcher()
+        df_stage = fetcher.fetch_bills_timeline(start_date=start_date, end_date=end_date, age=age)
 
         if df_stage is None or df_stage.empty:
             print("❌ [ERROR] 수집된 데이터가 없습니다.")
@@ -401,8 +401,8 @@ class WorkFlowManager:
             'age': age
         }
 
-        fetcher = DataFetcher(params)
-        df_result = fetcher.fetch_data('bill_result')
+        fetcher = DataFetcher()
+        df_result = fetcher.fetch_bills_result(start_date=start_date, end_date=end_date, age=age)
 
         if df_result is None or df_result.empty:
             print("❌ [ERROR] 수집된 데이터가 없습니다.")
@@ -468,14 +468,14 @@ class WorkFlowManager:
             'age': age
         }
 
-        fetcher = DataFetcher(params)
-        df_vote = fetcher.fetch_data('bill_vote')
+        fetcher = DataFetcher()
+        df_vote = fetcher.fetch_bills_vote(start_date=start_date, end_date=end_date, age=age)
 
         if df_vote is None or df_vote.empty:
             print("❌ [ERROR] 수집된 표결 결과 데이터가 없습니다.")
             return None, None
 
-        df_vote_party = fetcher.fetch_data('vote_party')
+        df_vote_party = fetcher.fetch_vote_party(start_date=start_date, end_date=end_date, age=age)
 
         columns_to_keep = [
             'BILL_ID',
@@ -608,7 +608,7 @@ class WorkFlowManager:
 
         df_alt_ids = df_bills_content[['proposeDt', 'billId', 'proposerKind']]
 
-        fetcher = DataFetcher(params=None)
+        fetcher = DataFetcher()
         df_alternatives = fetcher.fetch_bills_alternatives(df_alt_ids)
 
         if df_alternatives is None or df_alternatives.empty:

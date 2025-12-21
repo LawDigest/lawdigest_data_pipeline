@@ -7,8 +7,8 @@ import traceback
 # 프로젝트 루트 경로를 sys.path에 추가
 sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 
-from src.data_operations.WorkFlowManager import WorkFlowManager
-from src.data_operations.Notifier import Notifier
+from src.lawdigest_data_pipeline.WorkFlowManager import WorkFlowManager
+from src.lawdigest_data_pipeline.Notifier import Notifier
 
 def main(start_date: str, end_date: str, age: str):
     """
@@ -29,13 +29,8 @@ def main(start_date: str, end_date: str, age: str):
         data_count = len(result_df) if result_df is not None else 0
         
         success_message = f"✅ **[{job_name}]** 작업이 성공적으로 완료되었습니다.\n- {args_str}\n- **처리된 데이터**: {data_count}건"
-        
-        if result_df is not None and not result_df.empty and 'proposeDate' in result_df.columns:
-            propose_dates_summary = result_df['proposeDate'].value_counts().sort_index().to_string()
-            success_message += f"\n\n**[법안 제안일자별 분포]**\n```\n{propose_dates_summary}\n```"
 
         print(success_message)
-        notifier.send_discord_message(success_message)
 
     except Exception as e:
         error_message = f"🚨 **[{job_name}]** 작업 중 오류 발생!\n- {args_str}\n\n- **오류 내용**: `{type(e).__name__}: {str(e)}`\n- **Traceback**:\n```\n{traceback.format_exc()}\n```"
