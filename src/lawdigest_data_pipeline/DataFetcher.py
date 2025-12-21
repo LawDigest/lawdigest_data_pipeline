@@ -698,7 +698,7 @@ class DataFetcher:
         self.content = df_coactors
         return df_coactors
 
-    def fetch_bills_timeline(self, start_date=None, end_date=None, age=None, **kwargs):
+    def fetch_bills_timeline(self, start_date=None, end_date=None, age=None, max_retry=3, **kwargs):
         """
         특정 기간 동안의 의정활동 데이터를 수집합니다.
         이 메서드는 날짜별로 페이지네이션을 수행합니다.
@@ -707,6 +707,7 @@ class DataFetcher:
             start_date (str, optional): 검색 시작일 (YYYY-MM-DD). Defaults to 어제.
             end_date (str, optional): 검색 종료일 (YYYY-MM-DD). Defaults to 오늘.
             age (str, optional): 대수. Defaults to AGE 환경변수.
+            max_retry (int, optional): 날짜별 최대 재시도 횟수. Defaults to 3.
             **kwargs: API 요청에 전달할 추가 매개변수.
         """
         all_data = []
@@ -725,7 +726,7 @@ class DataFetcher:
 
         print(f"\n📌 [INFO] [{_start_date.strftime('%Y-%m-%d')} ~ {_end_date.strftime('%Y-%m-%d')}] 의정활동 데이터 수집 시작...")
 
-        max_retry = 3
+        # max_retry 인자 사용
         url = "https://open.assembly.go.kr/portal/openapi/nqfvrbsdafrmuzixe"
 
         for single_date in (_start_date + timedelta(n) for n in range(date_range)):
@@ -799,7 +800,7 @@ class DataFetcher:
         return df_timeline
 
 
-    def fetch_bills_result(self, start_date=None, end_date=None, age=None, **kwargs):
+    def fetch_bills_result(self, start_date=None, end_date=None, age=None, max_retry=3, **kwargs):
         """
         특정 기간 동안의 법안 결과 데이터를 수집합니다.
         
@@ -807,6 +808,7 @@ class DataFetcher:
             start_date (str, optional): 검색 시작일 (YYYY-MM-DD). Defaults to 오늘.
             end_date (str, optional): 검색 종료일 (YYYY-MM-DD). Defaults to 오늘.
             age (str, optional): 대수. Defaults to AGE 환경변수.
+            max_retry (int, optional): 날짜별 최대 재시도 횟수. Defaults to 3.
             **kwargs: API 요청에 전달할 추가 매개변수.
         """
         _start_date_str = start_date or datetime.now().strftime('%Y-%m-%d')
@@ -828,7 +830,7 @@ class DataFetcher:
         current_date = _start_date
         while current_date <= _end_date:
             pageNo = 1
-            max_retry_per_date = 3
+            max_retry_per_date = max_retry
             
             while True:
                 params = {
@@ -910,7 +912,7 @@ class DataFetcher:
         self.content = df_result
         return df_result
 
-    def fetch_bills_vote(self, start_date=None, end_date=None, age=None, **kwargs):
+    def fetch_bills_vote(self, start_date=None, end_date=None, age=None, max_retry=3, **kwargs):
         """
         특정 기간 동안의 본회의 의결 데이터를 수집합니다.
         
@@ -918,6 +920,7 @@ class DataFetcher:
             start_date (str, optional): 검색 시작일 (YYYY-MM-DD). Defaults to 어제.
             end_date (str, optional): 검색 종료일 (YYYY-MM-DD). Defaults to 오늘.
             age (str, optional): 대수. Defaults to AGE 환경변수.
+            max_retry (int, optional): 날짜별 최대 재시도 횟수. Defaults to 3.
             **kwargs: API 요청에 전달할 추가 매개변수.
         """
         _start_date_str = start_date or (datetime.now() - timedelta(1)).strftime('%Y-%m-%d')
@@ -940,7 +943,7 @@ class DataFetcher:
         for single_date in (_start_date + timedelta(n) for n in range(date_range)):
             date_str = single_date.strftime('%Y-%m-%d')
             pageNo = 1 # 날짜 변경 시 페이지 번호 초기화
-            max_retry_per_date = 3
+            max_retry_per_date = max_retry
 
             while True:
                 params = {
@@ -1010,7 +1013,7 @@ class DataFetcher:
         self.content = df_vote
         return df_vote
 
-    def fetch_vote_party(self, df_vote=None, start_date=None, end_date=None, age=None, **kwargs):
+    def fetch_vote_party(self, df_vote=None, start_date=None, end_date=None, age=None, max_retry=3, **kwargs):
         """
         법안별 정당별 투표 결과를 수집합니다.
         
@@ -1020,6 +1023,7 @@ class DataFetcher:
             start_date (str, optional): df_vote 자동 수집 시 사용할 시작일.
             end_date (str, optional): df_vote 자동 수집 시 사용할 종료일.
             age (str, optional): df_vote 자동 수집 시 사용할 대수.
+            max_retry (int, optional): 법안별 최대 재시도 횟수. Defaults to 3.
             **kwargs: *정당별 투표 결과* API 요청에 전달할 추가 매개변수.
         """
         _age = age or os.getenv("AGE")
@@ -1068,7 +1072,7 @@ class DataFetcher:
 
         for bill_id in tqdm(bill_ids_to_fetch, desc="정당별 투표 수집", unit="법안"):
             pageNo = 1
-            max_retry_per_bill = 3
+            max_retry_per_bill = max_retry
             bill_data_count = 0
             
             while True:
@@ -1182,7 +1186,7 @@ class DataFetcher:
         self.content = df_vote_party
         return df_vote_party
 
-    def fetch_bills_alternatives(self, df_bills=None, start_date=None, end_date=None, age=None, **kwargs):
+    def fetch_bills_alternatives(self, df_bills=None, start_date=None, end_date=None, age=None, max_retry=3, **kwargs):
         """
         df_bills를 기반으로 각 법안의 대안을 수집하고 반환하는 메서드.
 
@@ -1192,13 +1196,14 @@ class DataFetcher:
             start_date (str, optional): df_bills 자동 수집 시 사용할 시작일.
             end_date (str, optional): df_bills 자동 수집 시 사용할 종료일.
             age (str, optional): df_bills 자동 수집 시 사용할 대수.
+            max_retry (int, optional): 법안별 최대 재시도 횟수. Defaults to 3.
             **kwargs: *대안 법안* API 요청에 전달할 추가 매개변수.
             
         Returns:
             pd.DataFrame: 각 법안의 대안을 포함하는 데이터프레임
         """
 
-        # 1. df_bills 처리 (사용자 > 캐시 > 자동 수집)
+        # ... (중략: df_bills 처리 로직은 동일)
         local_df_bills = df_bills
         if local_df_bills is None:
             print("✅ [INFO] 'df_bills'가 전달되지 않았습니다. 캐시 확인 중...")
@@ -1230,36 +1235,45 @@ class DataFetcher:
             # 이 메서드에 전달된 kwargs를 내부 API 호출에 사용
             params.update(inner_kwargs) 
 
-            try:
-                response = requests.get(url, params=params, timeout=10)
+            # 재시도 루프
+            for attempt in range(max_retry + 1):
+                try:
+                    # self.session.get을 사용하고 timeout을 30초로 상향
+                    response = self.session.get(url, params=params, timeout=30)
 
-                if response.status_code == 200:
-                    root = ElementTree.fromstring(response.content)
-                    items = root.find('.//exhaust')
+                    if response.status_code == 200:
+                        root = ElementTree.fromstring(response.content)
+                        items = root.find('.//exhaust')
 
-                    if items is None or len(items.findall('item')) == 0:
-                        return []
+                        if items is None or len(items.findall('item')) == 0:
+                            return []
 
-                    law_data = []
-                    for item in items.findall('item'):
-                        bill_link_elem = item.find('billLink')
-                        bill_name_elem = item.find('billName')
-                        
-                        if bill_link_elem is None or bill_name_elem is None:
-                            continue
+                        law_data = []
+                        for item in items.findall('item'):
+                            bill_link_elem = item.find('billLink')
+                            bill_name_elem = item.find('billName')
                             
-                        bill_link = bill_link_elem.text
-                        law_bill_id = bill_link.split('bill_id=')[-1]
-                        bill_name = bill_name_elem.text
-                        law_data.append({'billId': law_bill_id, 'billName': bill_name})
+                            if bill_link_elem is None or bill_name_elem is None:
+                                continue
+                                
+                            bill_link = bill_link_elem.text
+                            law_bill_id = bill_link.split('bill_id=')[-1]
+                            bill_name = bill_name_elem.text
+                            law_data.append({'billId': law_bill_id, 'billName': bill_name})
 
-                    return law_data
-                else:
-                    tqdm.write(f"❌ [ERROR] API 요청 실패 (bill_id={bill_id}), 응답 코드: {response.status_code}")
-                    return []
-            except Exception as e:
-                tqdm.write(f"❌ [ERROR] bill_id={bill_id} 처리 중 오류 발생: {e}")
-                return []
+                        return law_data
+                    else:
+                        tqdm.write(f"❌ [ERROR] API 요청 실패 (bill_id={bill_id}), 응답 코드: {response.status_code}")
+                        return []
+                except Exception as e:
+                    if attempt < max_retry:
+                        tqdm.write(f"⚠️ [RETRY] bill_id={bill_id} 요청 중 오류 발생 ({attempt+1}/{max_retry}): {e}")
+                        time.sleep(2) # 재시도 전 대기
+                        continue
+                    else:
+                        tqdm.write(f"❌ [ERROR] bill_id={bill_id} 처리 중 최종 오류 발생: {e}")
+                        return []
+            return []
 
         # 대안 데이터프레임 초기화
         alternatives_data = []
