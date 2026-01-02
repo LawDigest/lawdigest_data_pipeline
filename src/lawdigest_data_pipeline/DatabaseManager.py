@@ -751,6 +751,125 @@ class DatabaseManager:
                         WHERE vote_party_id = %(vote_party_id)s
                     """, update_batch)
     
+    def update_party_statistics(self) -> None:
+        """
+        정당별 통계(의원 수, 법안 수)를 집계하여 Party 테이블을 업데이트합니다.
+        (기존 updateCongressmanCountByParty, updateBillCountByParty 대체)
+        """
+        with self.transaction() as cursor:
+            # 1. 정당별 의원 수 집계 (district_congressman_count, proportional_congressman_count)
+            # elect_sort: '지역구', '비례대표'
+            
+            # 초기화: 모든 정당의 count를 0으로 리셋하거나, 집계된 값으로 덮어씀.
+            # 여기서는 안전하게 집계된 값으로 업데이트.
+            
+            # 지역구 의원 수
+            cursor.execute("""
+                SELECT party_id, COUNT(*) as count
+                FROM Congressman
+                WHERE state = 1 AND elect_sort = '지역구'
+                GROUP BY party_id
+            """)
+            district_counts = {row['party_id']: row['count'] for row in cursor.fetchall()}
+            
+            # 비례대표 의원 수
+            cursor.execute("""
+                SELECT party_id, COUNT(*) as count
+                FROM Congressman
+                WHERE state = 1 AND elect_sort = '비례대표'
+                GROUP BY party_id
+            """)
+            proportional_counts = {row['party_id']: row['count'] for row in cursor.fetchall()}
+            
+            # 2. 정당별 법안 수 집계 (public_bill_count, representative_bill_count)
+            # RepresentativeProposer (대표발의), BillProposer (공동발의)
+            
+            # 대표발의 법안 수
+            cursor.execute("""
+                SELECT party_id, COUNT(*) as count
+                FROM RepresentativeProposer
+                GROUP BY party_id
+            """)
+            representative_bill_counts = {row['party_id']: row['count'] for row in cursor.fetchall()}
+            
+            # 공동발의 법안 수 (BillProposer)
+            cursor.execute("""
+                SELECT party_id, COUNT(*) as count
+                FROM BillProposer
+                GROUP BY party_id
+            """)
+            public_bill_counts = {row['party_id']: row['count'] for row in cursor.fetchall()}
+            
+            # 3. Party 테이블 업데이트
+            # 모든 Party ID 수집
+            all_party_ids = set(district_counts.keys()) | set(proportional_counts.keys()) | \
+                            set(representative_bill_counts.keys()) | set(public_bill_counts.keys())
+            
+            if not all_party_ids:
+                return
+
+            update_params = []
+            for party_id in all_party_ids:
+                update_params.append({
+                    'party_id': party_id,
+                    'district_count': district_counts.get(party_id, 0),
+                    'proportional_count': proportional_counts.get(party_id, 0),
+                    'rep_bill_count': representative_bill_counts.get(party_id, 0),
+                    'pub_bill_count': public_bill_counts.get(party_id, 0)
+                })
+            
+            update_query = """
+                UPDATE Party
+                SET 
+                    district_congressman_count = %(district_count)s,
+                    proportional_congressman_count = %(proportional_count)s,
+                    representative_bill_count = %(rep_bill_count)s,
+                    public_bill_count = %(pub_bill_count)s,
+                    modified_date = NOW()
+                WHERE party_id = %(party_id)s
+            """
+            
+            cursor.executemany(update_query, update_params)
+    
+    
+    def update_congressman_statistics(self) -> None:
+        """
+        의원별 최근 대표발의일자(congressman_bill_propose_date)를 집계하여 업데이트합니다.
+        (기존 updateProposeDateByCongressman 대체)
+        """
+        with self.transaction() as cursor:
+            # RepresentativeProposer와 Bill을 조인하여 의원별 가장 최근 propose_date 조회
+            cursor.execute("""
+                SELECT rp.congressman_id, MAX(b.propose_date) as last_propose_date
+                FROM RepresentativeProposer rp
+                JOIN Bill b ON rp.bill_id = b.bill_id
+                GROUP BY rp.congressman_id
+            """)
+            
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return
+                
+            update_params = []
+            for row in rows:
+                if row['last_propose_date']:
+                    update_params.append({
+                        'congressman_id': row['congressman_id'],
+                        'last_date': row['last_propose_date']
+                    })
+            
+            if update_params:
+                # 배치 업데이트
+                update_query = """
+                    UPDATE Congressman
+                    SET 
+                        congressman_bill_propose_date = %(last_date)s,
+                        modified_date = NOW()
+                    WHERE congressman_id = %(congressman_id)s
+                """
+                cursor.executemany(update_query, update_params)
+
     def close(self) -> None:
         """데이터베이스 연결을 종료합니다."""
         if self.connection:
