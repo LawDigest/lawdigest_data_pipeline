@@ -426,6 +426,331 @@ class DatabaseManager:
 
             return existing_ids
 
+    def update_lawmaker_info(self, lawmaker_data: List[Dict]) -> None:
+        """
+        의원 정보를 DB에 동기화합니다. (기존 updateLawmakerDf 대체)
+
+        Args:
+            lawmaker_data (List[Dict]): 업데이트할 의원 정보 리스트.
+                - congressman_id, name, party_name, district, elect_sort, ...
+        """
+        if not lawmaker_data:
+            return
+
+        with self.transaction() as cursor:
+            # 1. 정당 ID 확보 (없으면 생성)
+            party_names = {item['party_name'] for item in lawmaker_data if 'party_name' in item}
+            party_map = self._ensure_parties(cursor, party_names)
+
+            # 2. 존재하는 의원 ID 조회
+            cursor.execute("SELECT congressman_id FROM Congressman")
+            existing_rows = cursor.fetchall()
+            existing_ids = {row['congressman_id'] for row in existing_rows}
+            
+            input_ids = {item['congressman_id'] for item in lawmaker_data}
+
+            # 3. 비활성 처리 (Disable)
+            # DB에는 있는데 입력 데이터에 없는 의원은 state=False 처리
+            disable_ids = list(existing_ids - input_ids)
+            if disable_ids:
+                format_strings = ','.join(['%s'] * len(disable_ids))
+                disable_query = f"UPDATE Congressman SET state = 0, modified_date = NOW() WHERE congressman_id IN ({format_strings})"
+                cursor.execute(disable_query, tuple(disable_ids))
+
+            # 4. Upsert (Insert or Update)
+            upsert_query = """
+                INSERT INTO Congressman (
+                    congressman_id, name, party_id, district, elect_sort, 
+                    commits, elected, homepage, congressman_image_url, 
+                    email, sex, congressman_age, congressman_office, congressman_telephone,
+                    brief_history, state, created_date, modified_date
+                ) VALUES (
+                    %(congressman_id)s, %(name)s, %(party_id)s, %(district)s, %(elect_sort)s,
+                    %(commits)s, %(elected)s, %(homepage)s, %(congressman_image_url)s,
+                    %(email)s, %(sex)s, %(congressman_age)s, %(congressman_office)s, %(congressman_telephone)s,
+                    %(brief_history)s, 1, NOW(), NOW()
+                ) AS new
+                ON DUPLICATE KEY UPDATE
+                    party_id = new.party_id,
+                    district = new.district,
+                    elect_sort = new.elect_sort,
+                    commits = new.commits,
+                    elected = new.elected,
+                    homepage = new.homepage,
+                    congressman_image_url = new.congressman_image_url,
+                    email = new.email,
+                    sex = new.sex,
+                    congressman_age = new.congressman_age,
+                    brief_history = new.brief_history,
+                    state = 1,
+                    modified_date = NOW()
+            """
+            
+            upsert_params = []
+            for item in lawmaker_data:
+                item_party_id = party_map.get(item.get('party_name'))
+                if item_party_id is None:
+                    # Party creation failed or missing name, skip or handle error?
+                    # _ensure_parties should have created it.
+                    continue
+                
+                # Prepare params dict including party_id
+                params = item.copy()
+                params['party_id'] = item_party_id
+                
+                # Fill optional fields with defaults if missing
+                # (executemany expects same keys, but DictCursor params matching uses keys)
+                # Ensure all keys in SQL are present in params
+                required_keys = [
+                    'congressman_id', 'name', 'district', 'elect_sort', 
+                    'commits', 'elected', 'homepage', 'congressman_image_url',
+                    'email', 'sex', 'congressman_age', 'congressman_office', 'congressman_telephone',
+                    'brief_history'
+                ]
+                for k in required_keys:
+                    if k not in params:
+                        params[k] = None
+                
+                upsert_params.append(params)
+
+            if upsert_params:
+                cursor.executemany(upsert_query, upsert_params)
+
+    def _ensure_parties(self, cursor: pymysql.cursors.Cursor, party_names: Set[str]) -> Dict[str, int]:
+        """
+        정당 이름 목록에 해당하는 Party ID를 조회하고, 존재하지 않는 정당은 생성합니다.
+
+        Args:
+            cursor: 트랜잭션 커서
+            party_names: 확인할 정당 이름 Set
+
+        Returns:
+            Dict[str, int]: { '정당명': party_id } 매핑
+        """
+        if not party_names:
+            return {}
+
+        # 1. 기존 정당 조회
+        format_strings = ','.join(['%s'] * len(party_names))
+        select_query = f"SELECT party_id, name FROM Party WHERE name IN ({format_strings})"
+        cursor.execute(select_query, tuple(party_names))
+        rows = cursor.fetchall()
+        
+        party_map = {row['name']: row['party_id'] for row in rows}
+        
+        # 2. 없는 정당 생성
+        missing_parties = [name for name in party_names if name not in party_map]
+        
+        if missing_parties:
+            insert_query = "INSERT INTO Party (name, created_date, modified_date) VALUES (%s, NOW(), NOW())"
+            # Batch Insert
+            cursor.executemany(insert_query, [(name,) for name in missing_parties])
+            
+            # 3. 생성된 정당 ID 다시 조회
+            # party_id가 AUTO_INCREMENT라고 가정
+            # MySQL에선 executemany 후 lastrowid는 첫 번째 ID만 반환하거나 드라이버에 따라 다름.
+            # 가장 확실한 방법은 이름으로 다시 조회.
+            missing_format = ','.join(['%s'] * len(missing_parties))
+            reselect_query = f"SELECT party_id, name FROM Party WHERE name IN ({missing_format})"
+            cursor.execute(reselect_query, tuple(missing_parties))
+            new_rows = cursor.fetchall()
+            
+            for row in new_rows:
+                party_map[row['name']] = row['party_id']
+                
+        return party_map
+
+    def update_bill_result(self, bills_result_data: List[Dict]) -> None:
+        """
+        법안 처리 결과(bill_result)를 업데이트합니다. (기존 updateBillResultDf 대체)
+
+        Args:
+            bills_result_data (List[Dict]): 업데이트할 결과 정보.
+                - bill_id (str): 법안 ID
+                - bill_result (str): 처리 결과 (예: 원안가결, 수정가결 등)
+        """
+        if not bills_result_data:
+            return
+
+        with self.transaction() as cursor:
+            # 파라미터 준비: (bill_result, bill_id)
+            update_params = []
+            for item in bills_result_data:
+                if 'bill_result' in item and 'bill_id' in item:
+                    update_params.append((item['bill_result'], item['bill_id']))
+
+            if update_params:
+                # 1. Bill 테이블 업데이트
+                cursor.executemany(
+                    "UPDATE Bill SET bill_result = %s, modified_date = NOW() WHERE bill_id = %s",
+                    update_params
+                )
+
+                # 2. BillTimeline 테이블 업데이트
+                # '본회의 심의' 단계이면서 아직 결과가 없는(NULL) 타임라인만 업데이트
+                cursor.executemany(
+                    """
+                    UPDATE BillTimeline 
+                    SET bill_result = %s, modified_date = NOW()
+                    WHERE bill_id = %s AND bill_timeline_stage = '본회의 심의' AND bill_result IS NULL
+                    """,
+                    update_params
+                )
+    
+                # 2. BillTimeline 테이블 업데이트
+                # '본회의 심의' 단계이면서 아직 결과가 없는(NULL) 타임라인만 업데이트
+                cursor.executemany(
+                    """
+                    UPDATE BillTimeline 
+                    SET bill_result = %s, modified_date = NOW()
+                    WHERE bill_id = %s AND bill_timeline_stage = '본회의 심의' AND bill_result IS NULL
+                    """,
+                    update_params
+                )
+
+    def insert_vote_record(self, vote_data: List[Dict]) -> None:
+        """
+        본회의 표결 결과(VoteRecord)를 적재합니다. (기존 insertAssemblyVote 대체)
+
+        Args:
+            vote_data (List[Dict]): 표결 정보 리스트
+                - bill_id, vote_record_id(optional), votes_for_count, votes_againt_count, ...
+        """
+        if not vote_data:
+            return
+
+        with self.transaction() as cursor:
+            # 1. 존재하는 법안 확인
+            bill_ids = [item['bill_id'] for item in vote_data]
+            existing_bills = set(self.get_existing_bill_ids(bill_ids))
+            
+            # 파라미터 준비
+            upsert_params = []
+            for item in vote_data:
+                if item['bill_id'] not in existing_bills:
+                    continue
+                
+                upsert_params.append({
+                    'bill_id': item['bill_id'],
+                    'votes_for_count': item.get('votes_for_count', 0),
+                    'votes_againt_count': item.get('votes_againt_count', 0),
+                    'abstention_count': item.get('abstention_count', 0),
+                    'total_vote_count': item.get('total_vote_count', 0)
+                })
+
+            if upsert_params:
+                # Upsert Query (bill_id가 UNIQUE라고 가정)
+                upsert_query = """
+                    INSERT INTO VoteRecord (
+                        bill_id, votes_for_count, votes_againt_count, abstention_count, total_vote_count,
+                        created_date, modified_date
+                    ) VALUES (
+                        %(bill_id)s, %(votes_for_count)s, %(votes_againt_count)s, %(abstention_count)s, %(total_vote_count)s,
+                        NOW(), NOW()
+                    ) AS new
+                    ON DUPLICATE KEY UPDATE
+                        votes_for_count = new.votes_for_count,
+                        votes_againt_count = new.votes_againt_count,
+                        abstention_count = new.abstention_count,
+                        total_vote_count = new.total_vote_count,
+                        modified_date = NOW()
+                """
+                cursor.executemany(upsert_query, upsert_params)
+
+    def insert_vote_party(self, vote_party_data: List[Dict]) -> None:
+        """
+        정당별 투표 결과(VoteParty)를 적재합니다. (기존 insertVoteParty 대체)
+
+        Args:
+            vote_party_data (List[Dict]): 정당별 투표 정보 리스트
+                - bill_id, party_name, votes_for_count, ...
+        """
+        if not vote_party_data:
+            return
+
+        with self.transaction() as cursor:
+            # 1. 존재하는 법안 및 정당 확인
+            bill_ids = {item['bill_id'] for item in vote_party_data}
+            existing_bills = set(self.get_existing_bill_ids(list(bill_ids)))
+            
+            party_names = {item['party_name'] for item in vote_party_data}
+            party_map = self._ensure_parties(cursor, party_names)
+            
+            # 2. 파라미터 준비
+            upsert_params = []
+            for item in vote_party_data:
+                bill_id = item['bill_id']
+                party_name = item['party_name']
+                party_id = party_map.get(party_name)
+                
+                if bill_id not in existing_bills or party_id is None:
+                    continue
+                
+                upsert_params.append({
+                    'bill_id': bill_id,
+                    'party_id': party_id,
+                    'votes_for_count': item.get('votes_for_count', 0)
+                })
+
+            if upsert_params:
+                # 3. 투표 결과 삭제 후 재삽입 (idempotency, bill_id + party_id 기준)
+                # 복합 유니크 키가 없는 경우 중복 방지를 위해 삭제 후 삽입하는 것이 안전함.
+                # 단, VoteParty ID가 바뀌는 단점 존재.
+                
+                # 삭제 대상 법안 ID 수집 (관련된 모든 정당 투표 정보를 업데이트한다고 가정)
+                target_bills = {p['bill_id'] for p in upsert_params}
+                format_strings = ','.join(['%s'] * len(target_bills))
+                
+                # 특정 법안에 대한 특정 정당의 투표만 업데이트하는 경우, 전체 삭제는 위험함.
+                # 따라서 (bill_id, party_id) 조합으로 기존 데이터 확인 후 Update/Insert 필요 (Batch 처리가 까다로움).
+                # 하지만 여기서는 "Batch Delete & Insert"가 대량 처리에 효율적.
+                # Java 로직에서도 "foundVoteParty"를 찾아서 업데이트함.
+                
+                # 여기서는 안전한 'Check Existing & Separate Update/Insert' 방식을 배치로 구현
+                # (bill_id, party_id) 튜플로 기존 데이터 조회
+                
+                check_tuples = [(p['bill_id'], p['party_id']) for p in upsert_params]
+                # IN 절 생성을 위한 포맷팅
+                check_format = ','.join(['(%s, %s)'] * len(check_tuples))
+                check_query = f"SELECT vote_party_id, bill_id, party_id FROM VoteParty WHERE (bill_id, party_id) IN ({check_format})"
+                
+                # flat params
+                flat_check_params = []
+                for t in check_tuples:
+                    flat_check_params.extend(t)
+                
+                cursor.execute(check_query, tuple(flat_check_params))
+                existing_votes = cursor.fetchall() # [{'vote_party_id': 1, 'bill_id': 'A', 'party_id': 10}, ...]
+                
+                existing_map = {(row['bill_id'], row['party_id']): row['vote_party_id'] for row in existing_votes}
+                
+                insert_batch = []
+                update_batch = []
+                
+                for p in upsert_params:
+                    key = (p['bill_id'], p['party_id'])
+                    if key in existing_map:
+                        # Update
+                        p['vote_party_id'] = existing_map[key]
+                        update_batch.append(p)
+                    else:
+                        # Insert
+                        insert_batch.append(p)
+                
+                # 실행
+                if insert_batch:
+                    cursor.executemany("""
+                        INSERT INTO VoteParty (bill_id, party_id, votes_for_count, created_date, modified_date)
+                        VALUES (%(bill_id)s, %(party_id)s, %(votes_for_count)s, NOW(), NOW())
+                    """, insert_batch)
+                    
+                if update_batch:
+                    cursor.executemany("""
+                        UPDATE VoteParty 
+                        SET votes_for_count = %(votes_for_count)s, modified_date = NOW()
+                        WHERE vote_party_id = %(vote_party_id)s
+                    """, update_batch)
+    
     def close(self) -> None:
         """데이터베이스 연결을 종료합니다."""
         if self.connection:
