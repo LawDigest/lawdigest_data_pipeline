@@ -24,3 +24,4 @@ airflow/docker-compose.yaml
 tests/*.ipynb
 tests/result
 tests/DataFecther_test.ipynb
+src/lawdigest_dataops.egg-info
