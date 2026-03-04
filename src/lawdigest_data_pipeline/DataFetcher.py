@@ -299,9 +299,12 @@ class DataFetcher:
         # 컬럼 이름 변경
         df_bills.rename(columns={
             "proposeDt": "proposeDate",
+            "billId": "bill_id",
+            "billName": "bill_name",
             "billNo": "billNumber",
             "summary": "summary",
-            "procStageCd": "stage"
+            "procStageCd": "stage",
+            "proposerKind": "proposer_kind"
         }, inplace=True)
 
         # AssemblyNumber는 데이터 호출에 사용된 _age에서 가져오기
@@ -438,7 +441,7 @@ class DataFetcher:
         열린국회정보 API를 활용하여 대표발의자 및 공동발의자 정보를 수집합니다.
         
         Args:
-            df_bills (pd.DataFrame, optional): 'billId'가 포함된 법안 데이터프레임. 
+            df_bills (pd.DataFrame, optional): 'bill_id'가 포함된 법안 데이터프레임. 
                                               None이면 자동 수집을 시도합니다.
             start_date (str, optional): df_bills 자동 수집 시 사용할 시작일.
             end_date (str, optional): df_bills 자동 수집 시 사용할 종료일.
@@ -462,7 +465,7 @@ class DataFetcher:
 
         if local_df_bills is None or local_df_bills.empty:
             print("❌ [ERROR] 법안 데이터가 없습니다.")
-            return pd.DataFrame(columns=['billId', 'publicProposerIdList'])
+            return pd.DataFrame(columns=['bill_id', 'publicProposerIdList'])
 
         # 2. 국회의원 데이터 처리 (캐시 > 자동 수집)
         if self.df_lawmakers is None or self.df_lawmakers.empty:
@@ -473,13 +476,13 @@ class DataFetcher:
 
         if df_lawmakers is None or df_lawmakers.empty:
             print("❌ [ERROR] 국회의원 데이터가 존재하지 않아 발의자 코드를 매칭할 수 없습니다.")
-            return pd.DataFrame(columns=['billId', 'publicProposerIdList'])
+            return pd.DataFrame(columns=['bill_id', 'publicProposerIdList'])
 
         required_columns = {'HG_NM', 'MONA_CD'}
         missing_columns = required_columns - set(df_lawmakers.columns)
         if missing_columns:
             print(f"❌ [ERROR] 국회의원 데이터에 필요한 컬럼이 없습니다: {', '.join(sorted(missing_columns))}")
-            return pd.DataFrame(columns=['billId', 'publicProposerIdList'])
+            return pd.DataFrame(columns=['bill_id', 'publicProposerIdList'])
 
         api_key = (
             os.environ.get("APIKEY_billProposers")
@@ -489,15 +492,15 @@ class DataFetcher:
 
         if not api_key:
             print("❌ [ERROR] 발의자 정보를 조회할 API Key가 설정되어 있지 않습니다.")
-            return pd.DataFrame(columns=['billId', 'publicProposerIdList'])
+            return pd.DataFrame(columns=['bill_id', 'publicProposerIdList'])
 
         url = 'https://open.assembly.go.kr/portal/openapi/BILLINFOPPSR'
         mapper = self.mapper_open_xml
 
         bill_ids = (
             local_df_bills
-            .dropna(subset=['billId'])
-            ['billId']
+            .dropna(subset=['bill_id'])
+            ['bill_id']
             .astype(str)
             .unique()
             .tolist()
@@ -533,7 +536,7 @@ class DataFetcher:
             return aggregated.setdefault(
                 normalized,
                 {
-                    'billId': normalized,
+                    'bill_id': normalized,
                     'representativeProposerIdList': [],
                     'publicProposerIdList': [],
                     'ProposerName': [],
@@ -567,7 +570,7 @@ class DataFetcher:
 
         for bill_id in tqdm(bill_ids, desc="발의자 수집", unit="건"):
             if ensure_entry(bill_id) is None:
-                tqdm.write(f"⚠️ [WARN] billId {bill_id} 값이 올바르지 않아 건너뜁니다.")
+                tqdm.write(f"⚠️ [WARN] bill_id {bill_id} 값이 올바르지 않아 건너뜁니다.")
                 continue
 
             params = {
@@ -598,7 +601,7 @@ class DataFetcher:
                  print(df_tmp.iloc[0].to_dict())
 
             if df_tmp.empty:
-                tqdm.write(f"⚠️ [WARN] billId {bill_id}에 대한 발의자 데이터를 찾을 수 없습니다.")
+                tqdm.write(f"⚠️ [WARN] bill_id {bill_id}에 대한 발의자 데이터를 찾을 수 없습니다.")
                 continue
 
             df_tmp.columns = [col.upper() for col in df_tmp.columns]
@@ -652,7 +655,7 @@ class DataFetcher:
 
         if not aggregated:
             print("⚠️ [WARN] 어떤 법안에서도 발의자 정보를 수집하지 못했습니다.")
-            return pd.DataFrame(columns=['billId', 'publicProposerIdList'])
+            return pd.DataFrame(columns=['bill_id', 'publicProposerIdList'])
 
         df_coactors = pd.DataFrame(aggregated.values())
 
@@ -667,7 +670,7 @@ class DataFetcher:
         df_coactors['publicProposerIdList'] = df_coactors['publicProposerIdList'].apply(drop_empty_list)
         df_coactors['ProposerName'] = df_coactors['ProposerName'].apply(drop_empty_list)
         df_coactors = df_coactors[
-            ['billId', 'representativeProposerIdList', 'publicProposerIdList', 'ProposerName']
+            ['bill_id', 'representativeProposerIdList', 'publicProposerIdList', 'ProposerName']
         ]
 
         # 대표발의자가 비어있으면 공동발의자의 첫 번째 사람을 대표발의자로 간주 (법안 데이터 특성상 맨 앞이 대표발의자인 경우가 많음)
@@ -691,7 +694,7 @@ class DataFetcher:
         
         if removed_count > 0:
             print(f"⚠️ [INFO] 공동발의자 정보를 확보하지 못한 {removed_count}개 법안을 제외했습니다.")
-            print(f"   - 제외된 법안 ID: {removed_df['billId'].tolist()}")
+            print(f"   - 제외된 법안 ID: {removed_df['bill_id'].tolist()}")
 
         print(f"✅ [INFO] 발의자 정보 수집 완료. 총 {len(df_coactors)}개의 법안에 대한 데이터를 확보했습니다.")
 
@@ -1178,7 +1181,7 @@ class DataFetcher:
 
         # 컬럼 이름 변경
         df_vote_party.rename(columns={
-            'BILL_ID': 'billId',
+            'BILL_ID': 'bill_id',
             'POLY_NM': 'partyName',
             'voteForCount': 'voteForCount'
         }, inplace=True)
@@ -1191,7 +1194,7 @@ class DataFetcher:
         df_bills를 기반으로 각 법안의 대안을 수집하고 반환하는 메서드.
 
         Args:
-            df_bills (pd.DataFrame, optional): 'billId'가 포함된 법안 데이터프레임. 
+            df_bills (pd.DataFrame, optional): 'bill_id'가 포함된 법안 데이터프레임. 
                                               None이면 자동 수집을 시도합니다.
             start_date (str, optional): df_bills 자동 수집 시 사용할 시작일.
             end_date (str, optional): df_bills 자동 수집 시 사용할 종료일.
@@ -1221,8 +1224,8 @@ class DataFetcher:
             print("🚨 [WARNING] 법안 내용 데이터를 수집할 수 없습니다. 작업을 중단합니다.")
             return None
             
-        if 'billId' not in local_df_bills.columns:
-            print("❌ [ERROR] 'billId' 컬럼이 df_bills에 없습니다.")
+        if 'bill_id' not in local_df_bills.columns:
+            print("❌ [ERROR] 'bill_id' 컬럼이 df_bills에 없습니다.")
             return None
 
         def fetch_alternativeBills_relation_data(bill_id, api_key, **inner_kwargs):
@@ -1251,7 +1254,7 @@ class DataFetcher:
                         law_data = []
                         for item in items.findall('item'):
                             bill_link_elem = item.find('billLink')
-                            bill_name_elem = item.find('billName')
+                            bill_name_elem = item.find('bill_name')
                             
                             if bill_link_elem is None or bill_name_elem is None:
                                 continue
@@ -1259,7 +1262,7 @@ class DataFetcher:
                             bill_link = bill_link_elem.text
                             law_bill_id = bill_link.split('bill_id=')[-1]
                             bill_name = bill_name_elem.text
-                            law_data.append({'billId': law_bill_id, 'billName': bill_name})
+                            law_data.append({'bill_id': law_bill_id, 'bill_name': bill_name})
 
                         return law_data
                     else:
@@ -1287,7 +1290,7 @@ class DataFetcher:
 
         # tqdm을 사용하여 진행 상황 표시
         for _, row in tqdm(local_df_bills.iterrows(), total=len(local_df_bills), desc="대안 법안 수집"):
-            alt_id = row['billId']  # 대안(위원장안) ID
+            alt_id = row['bill_id']  # 대안(위원장안) ID
 
             # 대안 데이터 수집 (kwargs 전달)
             law_data = fetch_alternativeBills_relation_data(alt_id, api_key, **kwargs)
@@ -1296,7 +1299,7 @@ class DataFetcher:
             for law in law_data:
                 alternatives_data.append({
                     'altBillId': alt_id,  # 대안(위원장안) ID
-                    'billId': law['billId'],  # 대안에 포함된 법안 ID
+                    'bill_id': law['bill_id'],  # 대안에 포함된 법안 ID
                 })
 
         # 대안 데이터를 데이터프레임으로 변환
