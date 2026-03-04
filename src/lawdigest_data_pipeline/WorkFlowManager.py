@@ -214,6 +214,52 @@ class WorkFlowManager:
         db_conn.update_party_statistics()
         db_conn.update_congressman_statistics()
 
+    def fetch_bills_step(self, start_date=None, end_date=None, age=None):
+        """데이터 수집 및 전처리 단계만 수행"""
+        if start_date is None:
+            db_conn = DatabaseManager()
+            start_date = db_conn.get_latest_propose_date()
+        if end_date is None:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+        if age is None:
+            age = os.getenv("AGE")
+
+        fetcher = DataFetcher()
+        df_bills = fetcher.fetch_bills_data(start_date=start_date, end_date=end_date, age=age)
+        
+        if df_bills is None or df_bills.empty:
+            return None
+
+        processor = DataProcessor(fetcher)
+        if self.mode not in {"fetch", "ai_test", "dry-run"}:
+            df_bills = processor.remove_duplicates(df_bills, DatabaseManager())
+
+        if df_bills is not None and not df_bills.empty:
+            processor.add_AI_summary_columns(df_bills)
+            df_bills = processor.process_congressman_bills(df_bills)
+            if 'committee' not in df_bills.columns:
+                df_bills['committee'] = None
+
+        return df_bills
+
+    def summarize_bill_step(self, bill_data: dict):
+        """단일 법안 또는 소량의 법안에 대해 AI 요약 수행"""
+        df_bill = pd.DataFrame([bill_data]) if isinstance(bill_data, dict) else pd.DataFrame(bill_data)
+        summarizer = AISummarizer()
+        summarizer.AI_title_summarize(df_bill)
+        summarizer.AI_content_summarize(df_bill)
+        return df_bill.to_dict('records')
+
+    def upsert_bill_step(self, bill_data: dict | List[dict]):
+        """단일 법안 또는 리스트를 DB에 직접 적재"""
+        rows = bill_data if isinstance(bill_data, list) else [bill_data]
+        db_conn = DatabaseManager()
+        bill_rows = [self._build_bill_row(pd.Series(r)) for r in rows]
+        if bill_rows:
+            db_conn.insert_bill_info(bill_rows)
+            return len(bill_rows)
+        return 0
+
     def update_bills_data(self, start_date=None, end_date=None, age=None, run_stats: bool = True):
         """법안 데이터를 수집해 AI 요약 후 모드에 따라 적재/전송하는 함수
 

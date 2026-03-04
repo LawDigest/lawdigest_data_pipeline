@@ -9,45 +9,14 @@
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        100,
+        220,
         280
-      ]
-    },
-    {
-      "parameters": {
-        "rule": {
-          "interval": [
-            {
-              "field": "hour"
-            }
-          ]
-        }
-      },
-      "id": "cron-trigger",
-      "name": "Schedule Trigger",
-      "type": "n8n-nodes-base.scheduleTrigger",
-      "typeVersion": 1.1,
-      "position": [
-        100,
-        440
       ]
     },
     {
       "parameters": {
         "assignments": {
           "assignments": [
-            {
-              "id": "mode",
-              "name": "mode",
-              "value": "remote",
-              "type": "string"
-            },
-            {
-              "id": "age",
-              "name": "age",
-              "value": "22",
-              "type": "string"
-            },
             {
               "id": "start-date",
               "name": "start_date",
@@ -59,6 +28,18 @@
               "name": "end_date",
               "value": "={{ $moment().format('YYYY-MM-DD') }}",
               "type": "string"
+            },
+            {
+              "id": "age",
+              "name": "age",
+              "value": "22",
+              "type": "string"
+            },
+            {
+              "id": "execution-mode",
+              "name": "execution_mode",
+              "value": "remote",
+              "type": "string"
             }
           ]
         }
@@ -68,21 +49,138 @@
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        320,
-        360
+        440,
+        280
       ]
     },
     {
       "parameters": {
-        "command": "=/home/ubuntu/project/lawdigest/.venv/bin/python /home/ubuntu/project/lawdigest/scripts/run_n8n_db_pipeline.py --step bills --mode {{ $json.mode }} --start-date {{ $json.start_date }} --end-date {{ $json.end_date }} --age {{ $json.age }}"
+        "command": "=/home/ubuntu/project/lawdigest/.venv/bin/python /home/ubuntu/project/lawdigest/scripts/run_n8n_db_pipeline.py --step bills_fetch --mode {{ $json.execution_mode }} --start-date {{ $json.start_date }} --end-date {{ $json.end_date }} --age {{ $json.age }}"
       },
-      "id": "execute-pipeline",
-      "name": "Execute Pipeline",
+      "id": "fetch-bills-python",
+      "name": "Fetch Bills (Python)",
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "position": [
-        540,
-        360
+        660,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const bills = JSON.parse($json.stdout || '[]');\nreturn [{ json: { ...$node[\"Set Context\"].data.json, bills, bill_count: bills.length, is_dry_run: $node[\"Set Context\"].data.json.execution_mode === 'dry-run' } }];"
+      },
+      "id": "parse-fetch-result",
+      "name": "Parse Fetch Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{$json.bill_count}}",
+              "operation": "larger",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "if-has-data",
+      "name": "Has Data?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1100,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const bills = Array.isArray($json.bills) ? $json.bills : [];\nreturn bills.map(bill => ({ json: { ...$json, ...bill, bills: undefined } }));"
+      },
+      "id": "explode-bills",
+      "name": "Explode Bills",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1
+      },
+      "id": "loop-items",
+      "name": "Loop Over Bills",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1540,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/home/ubuntu/project/lawdigest/.venv/bin/python /home/ubuntu/project/lawdigest/scripts/run_n8n_db_pipeline.py --step bills_summarize --mode {{ $node[\"Set Context\"].data.json.execution_mode }} --input-json '{{ JSON.stringify($json) }}'"
+      },
+      "id": "summarize-bill-python",
+      "name": "AI Summarize (Python)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        1760,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const summarized = JSON.parse($json.stdout || '[]');\nreturn summarized.map(item => ({ json: item }));"
+      },
+      "id": "parse-summarize-result",
+      "name": "Parse Summarize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "command": "=/home/ubuntu/project/lawdigest/.venv/bin/python /home/ubuntu/project/lawdigest/scripts/run_n8n_db_pipeline.py --step bills_upsert --mode {{ $node[\"Set Context\"].data.json.execution_mode }} --input-json '{{ JSON.stringify($json) }}'"
+      },
+      "id": "upsert-bill-python",
+      "name": "DB Upsert (Python)",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.DISCORD_WEBHOOK_URL }}",
+        "method": "POST",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"content\": \"✅ [Python V3] Bill Processed: {{ $json.bill_name || $json.bill_id }}\" }",
+        "options": {}
+      },
+      "id": "notify-discord",
+      "name": "Discord Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        2420,
+        280
       ]
     }
   ],
@@ -98,22 +196,110 @@
         ]
       ]
     },
-    "Schedule Trigger": {
+    "Set Context": {
       "main": [
         [
           {
-            "node": "Set Context",
+            "node": "fetch-bills-python",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Set Context": {
+    "fetch-bills-python": {
       "main": [
         [
           {
-            "node": "execute-pipeline",
+            "node": "parse-fetch-result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-fetch-result": {
+      "main": [
+        [
+          {
+            "node": "if-has-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "if-has-data": {
+      "main": [
+        [
+          {
+            "node": "explode-bills",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "explode-bills": {
+      "main": [
+        [
+          {
+            "node": "loop-items",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "loop-items": {
+      "main": [
+        [
+          {
+            "node": "summarize-bill-python",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "summarize-bill-python": {
+      "main": [
+        [
+          {
+            "node": "parse-summarize-result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse-summarize-result": {
+      "main": [
+        [
+          {
+            "node": "upsert-bill-python",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "upsert-bill-python": {
+      "main": [
+        [
+          {
+            "node": "notify-discord",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "notify-discord": {
+      "main": [
+        [
+          {
+            "node": "loop-items",
             "type": "main",
             "index": 0
           }

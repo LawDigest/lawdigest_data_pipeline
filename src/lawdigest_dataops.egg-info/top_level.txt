@@ -1,3 +1,4 @@
+Lawbag
 etc
 lawdigest_ai
 lawdigest_data_pipeline
