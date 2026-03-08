@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""n8n 실행용 DB 모드 파이프라인 런처.
+"""n8n 실행용 DB 모드 파이프라인 런처 (레거시).
 
 Usage 예시:
   python scripts/run_n8n_db_pipeline.py --step bills_fetch --start-date 2025-12-01 --end-date 2025-12-07
@@ -149,6 +149,12 @@ def _is_data_step(step: str) -> bool:
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
+
+    print(
+        "[WARN] run_n8n_db_pipeline.py는 레거시 경로입니다. "
+        "운영 스케줄링은 Airflow DAG를 사용하세요.",
+        file=sys.stderr,
+    )
 
     if args.age is not None:
         os.environ["AGE"] = args.age

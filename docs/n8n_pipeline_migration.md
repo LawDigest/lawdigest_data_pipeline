@@ -1,4 +1,7 @@
-# n8n 전환 실행 가이드
+# n8n 전환 실행 가이드 (레거시/보관)
+
+> 상태: **Deprecated (2026-03-08)**  
+> 운영 오케스트레이터는 Airflow로 복귀했습니다. 신규 운영 기준은 `docs/airflow_rollback_runbook.md`를 따르세요.
 
 이 프로젝트는 `WorkFlowManager`의 `mode='db'` 경로를 이용해 API 서버를 거치지 않고 MySQL에 직접 적재할 수 있습니다.  
 `n8n`에서는 아래 엔트리포인트를 실행하면 Airflow DAG를 대체할 수 있습니다.

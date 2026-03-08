@@ -9,7 +9,8 @@
 4.  [`collect_results.py`](#collect_resultspy)
 5.  [`collect_timeline.py`](#collect_timelinepy)
 6.  [`collect_votes.py`](#collect_votespy)
-7.  [`run_n8n_db_pipeline.py`](#run_n8n_db_pipelinepy)
+7.  [`run_n8n_db_pipeline.py` (레거시)](#run_n8n_db_pipelinepy-레거시)
+8.  [Airflow 운영 명령(권장)](#airflow-운영-명령권장)
 
 ---
 
@@ -128,9 +129,10 @@ python tools/collect_votes.py --start-date 2024-01-01 --end-date 2024-01-31 --ag
 
 ---
 
-### `run_n8n_db_pipeline.py`
+### `run_n8n_db_pipeline.py` (레거시)
 
-n8n 연동용 DB 직접 적재 실행 스크립트입니다. API 호출 없이 `mode='db'`로 동작합니다.
+과거 n8n 연동용 DB 직접 적재 실행 스크립트입니다. API 호출 없이 `mode='db'`로 동작합니다.  
+현재 운영 기준은 Airflow이며, 본 스크립트는 디버깅/실험 목적에서만 사용하세요.
 
 **사용법:**
 ```bash
@@ -151,3 +153,25 @@ python scripts/run_n8n_db_pipeline.py --step stats
 ```bash
 python scripts/run_n8n_db_pipeline.py --step all --start-date 2024-01-01 --end-date 2024-01-31 --age 22
 ```
+
+---
+
+### Airflow 운영 명령(권장)
+
+운영/정기 실행은 Airflow DAG를 기준으로 수행합니다.
+
+**사용법:**
+```bash
+./scripts/airflow_control.sh up
+./scripts/airflow_control.sh list-dags
+./scripts/airflow_control.sh unpause-main
+./scripts/airflow_control.sh trigger-hourly 2026-03-01 2026-03-08 22
+```
+
+**세부 명령:**
+- `up`: Airflow 스택 시작(init 포함)
+- `status`: 컨테이너 상태 확인
+- `list-dags`: 등록 DAG 목록 조회
+- `unpause-main`: 주요 DAG(`lawdigest_hourly_update_dag`, `lawdigest_daily_db_backup_dag`) 활성화
+- `pause-main`: 주요 DAG 일시중지
+- `trigger-hourly [start_date] [end_date] [age]`: 시간별 DAG 수동 실행
