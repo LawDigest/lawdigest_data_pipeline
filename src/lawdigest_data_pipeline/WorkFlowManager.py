@@ -217,8 +217,7 @@ class WorkFlowManager:
     def fetch_bills_step(self, start_date=None, end_date=None, age=None):
         """데이터 수집 및 전처리 단계만 수행"""
         if start_date is None:
-            db_conn = DatabaseManager()
-            start_date = db_conn.get_latest_propose_date()
+            start_date = self._get_bills_start_date(start_date)
         if end_date is None:
             end_date = datetime.now().strftime('%Y-%m-%d')
         if age is None:
@@ -241,6 +240,26 @@ class WorkFlowManager:
                 df_bills['committee'] = None
 
         return df_bills
+
+    def _get_bills_start_date(self, start_date=None):
+        if start_date is not None:
+            return start_date
+
+        # ai_test/fetch/dry-run는 DB 조회 없이 최근 1일 데이터를 테스트/조회 대상으로 처리
+        if self.mode in {"ai_test", "fetch", "dry-run"}:
+            fallback_start_date = datetime.now().strftime('%Y-%m-%d')
+            print(
+                "[INFO] ai_test/fetch/dry-run 모드: 시작일이 지정되지 않았습니다. "
+                f"{fallback_start_date}를 시작일로 사용합니다. (DB 조회 생략)"
+            )
+            return fallback_start_date
+
+        # remote/db/test/full 모드는 기존 동작 유지: DB 최신일 기준
+        db_conn = DatabaseManager()
+        start_date = db_conn.get_latest_propose_date()
+        if start_date is None:
+            raise ValueError("DB에서 최신 법안 날짜를 가져올 수 없습니다.")
+        return start_date
 
     def summarize_bill_step(self, bill_data: dict):
         """단일 법안 또는 소량의 법안에 대해 AI 요약 수행"""
@@ -285,11 +304,7 @@ class WorkFlowManager:
         # 데이터 수집 기간 설정
         if start_date is None:
             try:
-                DBconn = DatabaseManager()
-                latest_propose_dt = DBconn.get_latest_propose_date()
-                if latest_propose_dt is None:
-                    raise ValueError("DB에서 최신 법안 날짜를 가져올 수 없습니다.")
-                start_date = latest_propose_dt
+                start_date = self._get_bills_start_date(start_date)
             except Exception as e:
                 raise ConnectionError(f"데이터베이스 조회 중 오류가 발생했습니다: {e}")
 

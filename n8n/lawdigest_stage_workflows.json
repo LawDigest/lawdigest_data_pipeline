@@ -1,0 +1,1385 @@
+[
+  {
+    "id": "LwdBillsFetch01",
+    "name": "lawdigest-bills-fetcher",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "hours",
+                "hoursInterval": 6
+              }
+            ]
+          }
+        },
+        "id": "f-schedule-trigger",
+        "name": "Schedule Trigger",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          0,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "f-run-id",
+                "name": "run_id",
+                "value": "={{ $moment().format('YYYYMMDD_HHmmss') }}",
+                "type": "string"
+              },
+              {
+                "id": "f-start-date",
+                "name": "start_date",
+                "value": "={{ $moment().subtract(1, 'days').format('YYYY-MM-DD') }}",
+                "type": "string"
+              },
+              {
+                "id": "f-end-date",
+                "name": "end_date",
+                "value": "={{ $moment().format('YYYY-MM-DD') }}",
+                "type": "string"
+              },
+              {
+                "id": "f-age",
+                "name": "age",
+                "value": "22",
+                "type": "string"
+              },
+              {
+                "id": "f-service-key",
+                "name": "service_key",
+                "value": "={{ $env.APIKEY_DATAGOKR }}",
+                "type": "string"
+              },
+              {
+                "id": "f-discord",
+                "name": "discord_webhook_url",
+                "value": "={{ $env.DISCORD_WEBHOOK_URL }}",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "f-set-context",
+        "name": "Set Context",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          224,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "language": "pythonNative",
+          "pythonCode": "import re\nimport urllib.parse\nimport urllib.request\nimport urllib.error\nfrom datetime import datetime, timedelta\nfrom html import unescape\n\nAPI_URL = 'https://apis.data.go.kr/9710000/BillInfoService2/getBillInfoList'\nPAGE_SIZE = 100\n\ninput_data = _items[0].get('json', {}) if _items else {}\n\n\ndef to_text(value, fallback=''):\n    if value is None:\n        return fallback\n    text = str(value).strip()\n    return text if text else fallback\n\n\ndef format_date(dt):\n    return dt.strftime('%Y-%m-%d')\n\n\nnow = datetime.now()\nstart_date = to_text(input_data.get('start_date'), format_date(now))\nend_date = to_text(input_data.get('end_date'), format_date(now))\nage = to_text(input_data.get('age'), '22')\n\nservice_key = to_text(\n    input_data.get('service_key')\n    or input_data.get('apiKey')\n    or input_data.get('API_KEY'),\n    ''\n)\n\n\ndef base_output():\n    out = dict(input_data)\n    out['start_date'] = start_date\n    out['end_date'] = end_date\n    out['age'] = age\n    return out\n\n\nif not service_key:\n    out = base_output()\n    out['error'] = 'Missing APIKEY_DATAGOKR'\n    out['bills'] = []\n    out['bill_count'] = 0\n    return [{'json': out}]\n\n\ndef extract_tag_text(xml_text, tag_name):\n    match = re.search(rf'<{tag_name}\\b[^>]*>([\\s\\S]*?)</{tag_name}>', xml_text, flags=re.IGNORECASE)\n    if not match:\n        return ''\n    return to_text(unescape(match.group(1)))\n\n\ndef parse_total_count(xml_text):\n    patterns = [\n        r'<totalCount>\\s*([0-9]+)\\s*</totalCount>',\n        r'<list_total_count>\\s*([0-9]+)\\s*</list_total_count>',\n    ]\n    for pattern in patterns:\n        match = re.search(pattern, xml_text, flags=re.IGNORECASE)\n        if match:\n            try:\n                return int(match.group(1))\n            except ValueError:\n                pass\n    return 0\n\n\ndef parse_bills_from_xml(xml_text):\n    bills = []\n    for match in re.finditer(r'<item\\b[^>]*>([\\s\\S]*?)</item>', xml_text, flags=re.IGNORECASE):\n        row = to_text(match.group(1))\n        if not row:\n            continue\n\n        bill = {\n            'proposeDate': extract_tag_text(row, 'proposeDt'),\n            'billId': extract_tag_text(row, 'billId'),\n            'billName': extract_tag_text(row, 'billName'),\n            'billNumber': extract_tag_text(row, 'billNo'),\n            'summary': extract_tag_text(row, 'summary'),\n            'stage': extract_tag_text(row, 'procStageCd'),\n            'proposerKind': extract_tag_text(row, 'proposerKind'),\n            'assemblyNumber': age,\n        }\n\n        if not bill['summary']:\n            continue\n        bills.append(bill)\n\n    return bills\n\n\ndef request_xml(url):\n    request = urllib.request.Request(\n        url,\n        headers={\n            'Accept': 'application/xml',\n            'User-Agent': 'lawdigest-bills-pipeline/1.0',\n        },\n    )\n\n    try:\n        with urllib.request.urlopen(request, timeout=30) as response:\n            try:\n                status = response.status\n            except Exception:\n                status = response.getcode()\n\n            try:\n                reason = response.reason\n            except Exception:\n                reason = ''\n\n            body = response.read().decode('utf-8', errors='ignore')\n            return {'status': status, 'statusText': str(reason), 'body': body}\n    except urllib.error.HTTPError as error:\n        body = ''\n        try:\n            body = error.read().decode('utf-8', errors='ignore')\n        except Exception:\n            pass\n        return {'status': error.code, 'statusText': str(error.reason), 'body': body}\n\n\ndef fetch_bills_page(page_no):\n    params = {\n        'serviceKey': service_key,\n        'pageNo': str(page_no),\n        'numOfRows': str(PAGE_SIZE),\n        'start_ord': age,\n        'end_ord': age,\n        'start_propose_date': start_date,\n        'end_propose_date': end_date,\n    }\n    query_string = urllib.parse.urlencode(params)\n    response = request_xml(f'{API_URL}?{query_string}')\n\n    if response['status'] < 200 or response['status'] >= 300:\n        snippet = to_text(response.get('body', '')[:300])\n        raise Exception(f\"API HTTP {response['status']} {response.get('statusText', 'unknown')} - {snippet}\")\n\n    xml_text = response.get('body', '')\n    return {\n        'totalCount': parse_total_count(xml_text),\n        'bills': parse_bills_from_xml(xml_text),\n    }\n\n\ntry:\n    bills = []\n    page_no = 1\n\n    first = fetch_bills_page(page_no)\n    total_count = first['totalCount'] or len(first['bills'])\n    bills.extend(first['bills'])\n\n    while len(bills) < total_count:\n        page_no += 1\n        nxt = fetch_bills_page(page_no)\n        if not nxt['bills']:\n            break\n        bills.extend(nxt['bills'])\n\n    out = base_output()\n    out['bills'] = bills\n    out['bill_count'] = len(bills)\n    return [{'json': out}]\nexcept Exception as error:\n    out = base_output()\n    out['error'] = str(error)\n    out['bills'] = []\n    out['bill_count'] = 0\n    return [{'json': out}]\n"
+        },
+        "id": "f-fetch-bills",
+        "name": "Fetch Bills Raw",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          448,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "number": [
+              {
+                "value1": "={{$json.bill_count}}",
+                "operation": "larger"
+              }
+            ]
+          }
+        },
+        "id": "f-check-has-bills",
+        "name": "Has Bills?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          672,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "CREATE TABLE IF NOT EXISTS BillStaging (\n  id BIGINT AUTO_INCREMENT PRIMARY KEY,\n  bill_id VARCHAR(100) NOT NULL,\n  bill_number INT DEFAULT 0,\n  bill_name TEXT,\n  propose_date VARCHAR(20),\n  proposer_kind VARCHAR(20) DEFAULT 'CONGRESSMAN',\n  summary MEDIUMTEXT,\n  stage VARCHAR(100),\n  assembly_number VARCHAR(10),\n  status ENUM('pending','processing','done','failed') DEFAULT 'pending',\n  created_at DATETIME DEFAULT NOW(),\n  updated_at DATETIME DEFAULT NOW() ON UPDATE NOW(),\n  UNIQUE KEY uk_bill_id (bill_id)\n)",
+          "options": {}
+        },
+        "id": "f-ensure-staging",
+        "name": "Ensure Staging Table",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          896,
+          200
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const bills = $json.bills || [];\nconst context = $json;\nif (bills.length === 0) {\n  return [{ json: { ...context, bills: [], bill_ids: [], dedup_query: \"SELECT '_sentinel_' AS bill_id\", new_bills: [], new_count: 0 } }];\n}\nconst sqlEsc = v => `'${String(v).replace(/'/g, \"''\")}'`;\nconst idList = bills.map(b => sqlEsc(b.billId)).join(',');\nconst dedupQuery = [\n  `SELECT bill_id FROM Bill WHERE bill_id IN (${idList}) AND brief_summary IS NOT NULL AND gpt_summary IS NOT NULL`,\n  `SELECT bill_id FROM BillStaging WHERE bill_id IN (${idList}) AND status IN ('pending','processing')`,\n  `SELECT '_sentinel_' AS bill_id`\n].join('\\nUNION ALL\\n');\nreturn [{ json: { ...context, bills, bill_ids: bills.map(b => b.billId), dedup_query: dedupQuery } }];",
+          "mode": "runOnceForAllItems"
+        },
+        "id": "f-build-dedup",
+        "name": "Build Dedup Query",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1120,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{$json.dedup_query}}",
+          "options": {}
+        },
+        "id": "f-check-existing",
+        "name": "Check Existing Bills",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          1344,
+          200
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const existingItems = $input.all();\nconst existingIds = new Set(\n  existingItems.map(i => i.json.bill_id).filter(id => id && id !== '_sentinel_')\n);\nconst ctx = $items('Build Dedup Query', 0, 0)[0].json;\nconst allBills = ctx.bills || [];\nconst newBills = allBills.filter(b => b.billId && !existingIds.has(b.billId));\nreturn [{ json: { ...ctx, new_bills: newBills, new_count: newBills.length } }];",
+          "mode": "runOnceForAllItems"
+        },
+        "id": "f-filter-new",
+        "name": "Filter New Bills",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1568,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "number": [
+              {
+                "value1": "={{$json.new_count}}",
+                "operation": "larger"
+              }
+            ]
+          }
+        },
+        "id": "f-check-has-new",
+        "name": "Has New Bills?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          1792,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const newBills = $json.new_bills || [];\nconst ctx = $json;\nconst sqlEsc = v => (v === null || v === undefined) ? 'NULL' : `'${String(v).replace(/\\\\/g, '').replace(/'/g, \"''\")}'`;\nconst values = newBills.map(b =>\n  `(${sqlEsc(b.billId)}, ${parseInt(b.billNumber)||0}, ${sqlEsc(b.billName)}, ${sqlEsc(b.proposeDate)},\n   ${sqlEsc(b.proposerKind||'CONGRESSMAN')}, ${sqlEsc(b.summary)}, ${sqlEsc(b.stage)}, ${sqlEsc(b.assemblyNumber||b.age||'22')})`\n).join(',\\n');\nconst query = `INSERT INTO BillStaging\n  (bill_id, bill_number, bill_name, propose_date, proposer_kind, summary, stage, assembly_number)\nVALUES ${values}\nON DUPLICATE KEY UPDATE\n  bill_name   = VALUES(bill_name),\n  summary     = VALUES(summary),\n  stage       = VALUES(stage),\n  status      = IF(status = 'failed', 'pending', status),\n  updated_at  = NOW()`;\nreturn [{ json: { ...ctx, stage_insert_query: query, staged_count: newBills.length } }];",
+          "mode": "runOnceForAllItems"
+        },
+        "id": "f-build-stage-insert",
+        "name": "Build Stage Insert",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2016,
+          100
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{$json.stage_insert_query}}",
+          "options": {}
+        },
+        "id": "f-stage-insert",
+        "name": "Stage Insert",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          2240,
+          100
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const url = String($json.discord_webhook_url || '').trim();\nif (!url || /^YOUR_/i.test(url)) return [];\nconst content = `📥 [bills-fetcher] ${$json.staged_count}건 신규 적재\\n- run_id: ${$json.run_id}\\n- 조회 기간: ${$json.start_date} ~ ${$json.end_date}\\n- API 수신: ${$json.bill_count}건 / 신규: ${$json.staged_count}건`;\nreturn [{ json: { ...$json, content } }];"
+        },
+        "id": "f-notify-staged",
+        "name": "Build Staged Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2464,
+          100
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[lawdigest] notification\") } }}",
+          "options": {}
+        },
+        "id": "f-discord-staged",
+        "name": "Discord Staged",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          2688,
+          100
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const url = String($json.discord_webhook_url || '').trim();\nif (!url || /^YOUR_/i.test(url)) return [];\nconst content = `ℹ️ [bills-fetcher] 신규 법안 없음 (${$json.bill_count}건 조회, 모두 기존 데이터)\\n- 조회 기간: ${$json.start_date} ~ ${$json.end_date}`;\nreturn [{ json: { ...$json, content } }];"
+        },
+        "id": "f-notify-no-new",
+        "name": "Build NoNew Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1792,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[lawdigest] notification\") } }}",
+          "options": {}
+        },
+        "id": "f-discord-no-new",
+        "name": "Discord NoNew",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          2016,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const url = String($json.discord_webhook_url || '').trim();\nif (!url || /^YOUR_/i.test(url)) return [];\nconst content = `⚠️ [bills-fetcher] API에서 데이터 없음\\n- 조회 기간: ${$json.start_date} ~ ${$json.end_date}`;\nreturn [{ json: { ...$json, content } }];"
+        },
+        "id": "f-notify-no-data",
+        "name": "Build NoData Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          672,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[lawdigest] notification\") } }}",
+          "options": {}
+        },
+        "id": "f-discord-no-data",
+        "name": "Discord NoData",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          896,
+          500
+        ]
+      }
+    ],
+    "connections": {
+      "Schedule Trigger": {
+        "main": [
+          [
+            {
+              "node": "Set Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Set Context": {
+        "main": [
+          [
+            {
+              "node": "Fetch Bills Raw",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Bills Raw": {
+        "main": [
+          [
+            {
+              "node": "Has Bills?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Bills?": {
+        "main": [
+          [
+            {
+              "node": "Ensure Staging Table",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build NoData Notification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Ensure Staging Table": {
+        "main": [
+          [
+            {
+              "node": "Build Dedup Query",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Dedup Query": {
+        "main": [
+          [
+            {
+              "node": "Check Existing Bills",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check Existing Bills": {
+        "main": [
+          [
+            {
+              "node": "Filter New Bills",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Filter New Bills": {
+        "main": [
+          [
+            {
+              "node": "Has New Bills?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has New Bills?": {
+        "main": [
+          [
+            {
+              "node": "Build Stage Insert",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build NoNew Notification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Stage Insert": {
+        "main": [
+          [
+            {
+              "node": "Stage Insert",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Stage Insert": {
+        "main": [
+          [
+            {
+              "node": "Build Staged Notification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Staged Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord Staged",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build NoNew Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord NoNew",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build NoData Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord NoData",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "active": false,
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "versionId": "1"
+  },
+  {
+    "id": "LwdBillsProc01",
+    "name": "lawdigest-bills-processor",
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "p-manual-trigger",
+        "name": "When clicking 'Execute workflow'",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          0,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "p-run-id",
+                "name": "run_id",
+                "value": "={{ $moment().format('YYYYMMDD_HHmmss') }}",
+                "type": "string"
+              },
+              {
+                "id": "p-batch-size",
+                "name": "batch_size",
+                "value": 25,
+                "type": "number"
+              },
+              {
+                "id": "p-staging-limit",
+                "name": "staging_limit",
+                "value": 100,
+                "type": "number"
+              },
+              {
+                "id": "p-discord",
+                "name": "discord_webhook_url",
+                "value": "={{ $env.DISCORD_WEBHOOK_URL }}",
+                "type": "string"
+              },
+              {
+                "id": "p-gemini-model",
+                "name": "gemini_model",
+                "value": "={{ $env.GEMINI_MODEL || 'gemini-2.5-flash' }}",
+                "type": "string"
+              },
+              {
+                "id": "p-gemini-key",
+                "name": "gemini_api_key",
+                "value": "={{ $env.GEMINI_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "p-openai-key",
+                "name": "openai_api_key",
+                "value": "={{ $env.OPENAI_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "p-langsmith-key",
+                "name": "langsmith_api_key",
+                "value": "={{ $env.LANGSMITH_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "p-langsmith-proj",
+                "name": "langsmith_project",
+                "value": "={{ $env.LANGCHAIN_PROJECT || 'lawdigest-bills' }}",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "p-set-context",
+        "name": "Set Context",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          224,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "SELECT COUNT(*) AS pending_count FROM BillStaging WHERE status = 'pending'",
+          "options": {}
+        },
+        "id": "p-count-pending",
+        "name": "Count Pending",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          448,
+          300
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const cnt = Number($json.pending_count || 0);\nconst ctx = $items('Set Context', 0, 0)[0].json;\nreturn [{ json: { ...ctx, pending_count: cnt } }];"
+        },
+        "id": "p-merge-count",
+        "name": "Merge Count",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          672,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "number": [
+              {
+                "value1": "={{$json.pending_count}}",
+                "operation": "larger"
+              }
+            ]
+          }
+        },
+        "id": "p-check-has-pending",
+        "name": "Has Pending?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          896,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{`SELECT bill_id, bill_number, bill_name, propose_date, proposer_kind, summary, stage, assembly_number FROM BillStaging WHERE status = 'pending' ORDER BY created_at ASC LIMIT ${$json.staging_limit || 100}`}}",
+          "options": {}
+        },
+        "id": "p-fetch-pending",
+        "name": "Fetch Pending Bills",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          1120,
+          200
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const rows = $input.all().map(i => i.json);\nconst ctx = $items('Set Context', 0, 0)[0].json;\nconst sqlEsc = v => `'${String(v).replace(/'/g, \"''\")}'`;\nconst idList = rows.map(r => sqlEsc(r.bill_id)).join(',');\nconst markQuery = `UPDATE BillStaging SET status='processing', updated_at=NOW() WHERE bill_id IN (${idList})`;\nreturn [{ json: { ...ctx, bills: rows, bill_count: rows.length, mark_processing_query: markQuery } }];",
+          "mode": "runOnceForAllItems"
+        },
+        "id": "p-aggregate-pending",
+        "name": "Aggregate Pending",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1344,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{$json.mark_processing_query}}",
+          "options": {}
+        },
+        "id": "p-mark-processing",
+        "name": "Mark Processing",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          1568,
+          200
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const ctx = $items('Aggregate Pending', 0, 0)[0].json;\nconst bills = ctx.bills || [];\nreturn bills.map(b => ({\n  json: {\n    ...ctx,\n    billId: b.bill_id,\n    billName: b.bill_name,\n    billNumber: b.bill_number,\n    proposeDate: b.propose_date,\n    proposerKind: b.proposer_kind,\n    proposer_kind: b.proposer_kind,\n    summary: b.summary,\n    stage: b.stage,\n    assemblyNumber: b.assembly_number,\n    _staging_bill_id: b.bill_id,\n  }\n}));",
+          "mode": "runOnceForAllItems"
+        },
+        "id": "p-explode-bills",
+        "name": "Explode Bills",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1792,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "batchSize": "={{$json.batch_size || 25}}",
+          "options": {}
+        },
+        "id": "p-loop-items",
+        "name": "Loop Over Items",
+        "type": "n8n-nodes-base.splitInBatches",
+        "typeVersion": 3,
+        "position": [
+          2016,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const title = $json.billName || '';\nconst summary = String($json.summary || '').slice(0, 12000);\nconst unified_prompt = `아래 법안을 JSON 형식으로 분석해줘.\\n\\n[법안명]\\n${title}\\n\\n[본문]\\n${summary}\\n\\n출력 형식:\\n{\\\"briefSummary\\\":\\\"1문장 제목 (~하기 위한 ${title} 형태로 끝남)\\\",\\\"gptSummary\\\":\\\"3~7개 항목 한국어 요약, 마지막 1문장 취지 정리\\\"}`;\\nreturn [{ json: { ...$json, unified_prompt } }];"
+        },
+        "id": "p-build-ai-prompts",
+        "name": "Build AI Prompts",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2240,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.smith.langchain.com/runs",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-api-key",
+                "value": "={{ $json.langsmith_api_key }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { id: $json.run_id + '_' + ($json.billId || 'unknown'), name: 'bill-ai-summary', run_type: 'llm', start_time: new Date().toISOString(), inputs: { prompt: $json.unified_prompt, billId: $json.billId, billName: $json.billName }, extra: { execution_mode: $json.execution_mode, pipeline_run_id: $json.run_id }, tags: ['lawdigest', 'bills'], project_name: $json.langsmith_project } }}",
+          "options": {}
+        },
+        "id": "p-langsmith-start",
+        "name": "LangSmith Run Start",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          2464,
+          200
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ 'https://generativelanguage.googleapis.com/v1beta/models/' + ($json.gemini_model || 'gemini-2.5-flash') + ':generateContent?key=' + $json.gemini_api_key }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { contents: [{ parts: [{ text: $json.unified_prompt }] }], generationConfig: { responseMimeType: 'application/json', responseSchema: { type: 'object', properties: { briefSummary: { type: 'string' }, gptSummary: { type: 'string' } }, required: ['briefSummary', 'gptSummary'] }, temperature: 0.3, maxOutputTokens: 4096 } } }}",
+          "options": {}
+        },
+        "id": "p-gemini-unified",
+        "name": "Gemini Unified",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          2688,
+          200
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const src = $items('Build AI Prompts', 0, $itemIndex)[0].json;\nlet briefSummary = null, gptSummary = null;\ntry {\n  const parts = $json.candidates?.[0]?.content?.parts ?? [];\n  const raw = parts.map(p => p.text || '').join('').trim();\n  if (raw) { const p = JSON.parse(raw); briefSummary = p.briefSummary || null; gptSummary = p.gptSummary || null; }\n} catch(e) {}\nreturn [{ json: { ...src, briefSummary, gptSummary, needs_fallback: !briefSummary || !gptSummary } }];"
+        },
+        "id": "p-parse-gemini",
+        "name": "Parse Gemini Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2912,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{$json.needs_fallback}}",
+                "value2": true
+              }
+            ]
+          }
+        },
+        "id": "p-if-fallback",
+        "name": "Need AI Fallback?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          3136,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.openai.com/v1/chat/completions",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + $json.openai_api_key }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { model: 'gpt-4o-mini', messages: [{ role: 'user', content: $json.unified_prompt }], response_format: { type: 'json_schema', json_schema: { name: 'bill_summary', strict: true, schema: { type: 'object', properties: { briefSummary: { type: 'string' }, gptSummary: { type: 'string' } }, required: ['briefSummary', 'gptSummary'], additionalProperties: false } } }, temperature: 0.3, max_tokens: 4096 } }}",
+          "options": {}
+        },
+        "id": "p-gpt-fallback",
+        "name": "GPT Unified Fallback",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          3136,
+          400
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const src = $items('Parse Gemini Result', 0, $itemIndex)[0].json;\nlet { briefSummary, gptSummary } = src;\ntry {\n  const content = $json.choices?.[0]?.message?.content;\n  if (content) { const p = JSON.parse(content); briefSummary = p.briefSummary || briefSummary; gptSummary = p.gptSummary || gptSummary; }\n} catch(e) {}\nreturn [{ json: { ...src, briefSummary, gptSummary } }];"
+        },
+        "id": "p-parse-gpt",
+        "name": "Parse GPT Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3360,
+          400
+        ]
+      },
+      {
+        "parameters": {
+          "method": "PATCH",
+          "url": "={{ 'https://api.smith.langchain.com/runs/' + $json.run_id + '_' + ($json.billId || 'unknown') }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-api-key",
+                "value": "={{ $json.langsmith_api_key }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { end_time: new Date().toISOString(), outputs: { briefSummary: $json.briefSummary, gptSummary: $json.gptSummary }, status: ($json.briefSummary && $json.gptSummary) ? 'success' : 'error' } }}",
+          "options": {}
+        },
+        "id": "p-langsmith-end",
+        "name": "LangSmith Run End",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          3584,
+          300
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const toText = (v) => { if (v === undefined || v === null) return null; const t = String(v).trim(); return t.length ? t : null; };\nconst toInt = (v, d = 0) => { if (v === undefined || v === null || v === '') return d; const n = Number(String(v).replace(/,/g, '').trim()); return Number.isFinite(n) ? Math.trunc(n) : d; };\nconst sqlEscape = (v) => { if (v === undefined || v === null) return 'NULL'; const s = String(v).replace(/\\\\/g, '').replace(/'/g, \"''\"); return `'${s}'`; };\nconst billId = toText($json.billId);\nif (!billId) return [];\nconst billUpsertQuery = `INSERT INTO Bill (bill_id, bill_number, bill_name, propose_date, proposer_kind, summary, gpt_summary, brief_summary, committee, stage, bill_result, bill_pdf_url, bill_link, modified_date) VALUES (${sqlEscape(billId)}, ${toInt($json.billNumber)}, ${sqlEscape($json.billName)}, ${sqlEscape($json.proposeDate)}, 'CONGRESSMAN', ${sqlEscape($json.summary)}, ${sqlEscape($json.gptSummary)}, ${sqlEscape($json.briefSummary)}, ${sqlEscape($json.committee)}, ${sqlEscape($json.stage)}, ${sqlEscape($json.billResult)}, ${sqlEscape($json.billPdfUrl)}, ${sqlEscape($json.bill_link)}, NOW()) ON DUPLICATE KEY UPDATE modified_date=NOW();`;\nreturn [{ json: { ...$json, bill_upsert_query: billUpsertQuery } }];"
+        },
+        "id": "p-build-db",
+        "name": "Build DB Queries",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3808,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{$json.bill_upsert_query}}",
+          "options": {
+            "queryBatching": "independently"
+          }
+        },
+        "id": "p-mysql-upsert",
+        "name": "MySQL Upsert Bill",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          4032,
+          300
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{`UPDATE BillStaging SET status='done', updated_at=NOW() WHERE bill_id='${$json._staging_bill_id || $json.billId}'`}}",
+          "options": {}
+        },
+        "id": "p-mark-done",
+        "name": "Mark Staging Done",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          4256,
+          300
+        ],
+        "continueOnFail": true,
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "UPDATE Party SET modified_date = NOW();",
+          "options": {}
+        },
+        "id": "p-update-party",
+        "name": "MySQL Update Party Stats",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          2240,
+          0
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "UPDATE Congressman SET modified_date = NOW();",
+          "options": {}
+        },
+        "id": "p-update-congressman",
+        "name": "MySQL Update Congressman Stats",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          2464,
+          0
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const url = String($json.discord_webhook_url || '').trim();\nif (!url || /^YOUR_/i.test(url)) return [];\nconst content = `✅ [bills-processor] 처리 완료\\n- run_id: ${$json.run_id}`;\nreturn [{ json: { ...$json, content } }];"
+        },
+        "id": "p-notify-success",
+        "name": "Build Success Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2688,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[lawdigest] notification\") } }}",
+          "options": {}
+        },
+        "id": "p-discord-success",
+        "name": "Discord Success",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          2912,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const url = String($json.discord_webhook_url || '').trim();\nif (!url || /^YOUR_/i.test(url)) return [];\nconst content = 'ℹ️ [bills-processor] 처리할 법안 없음 (BillStaging 비어있음)';\nreturn [{ json: { ...$json, content } }];"
+        },
+        "id": "p-notify-no-pending",
+        "name": "Build NoPending Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          896,
+          500
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[lawdigest] notification\") } }}",
+          "options": {}
+        },
+        "id": "p-discord-no-pending",
+        "name": "Discord NoPending",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          1120,
+          500
+        ]
+      }
+    ],
+    "connections": {
+      "When clicking 'Execute workflow'": {
+        "main": [
+          [
+            {
+              "node": "Set Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Set Context": {
+        "main": [
+          [
+            {
+              "node": "Count Pending",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Count Pending": {
+        "main": [
+          [
+            {
+              "node": "Merge Count",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Merge Count": {
+        "main": [
+          [
+            {
+              "node": "Has Pending?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Pending?": {
+        "main": [
+          [
+            {
+              "node": "Fetch Pending Bills",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build NoPending Notification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Pending Bills": {
+        "main": [
+          [
+            {
+              "node": "Aggregate Pending",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Aggregate Pending": {
+        "main": [
+          [
+            {
+              "node": "Mark Processing",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Mark Processing": {
+        "main": [
+          [
+            {
+              "node": "Explode Bills",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Explode Bills": {
+        "main": [
+          [
+            {
+              "node": "Loop Over Items",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Loop Over Items": {
+        "main": [
+          [
+            {
+              "node": "MySQL Update Party Stats",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build AI Prompts",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build AI Prompts": {
+        "main": [
+          [
+            {
+              "node": "LangSmith Run Start",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "LangSmith Run Start": {
+        "main": [
+          [
+            {
+              "node": "Gemini Unified",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Gemini Unified": {
+        "main": [
+          [
+            {
+              "node": "Parse Gemini Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Gemini Result": {
+        "main": [
+          [
+            {
+              "node": "Need AI Fallback?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Need AI Fallback?": {
+        "main": [
+          [
+            {
+              "node": "GPT Unified Fallback",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "LangSmith Run End",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "GPT Unified Fallback": {
+        "main": [
+          [
+            {
+              "node": "Parse GPT Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse GPT Result": {
+        "main": [
+          [
+            {
+              "node": "LangSmith Run End",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "LangSmith Run End": {
+        "main": [
+          [
+            {
+              "node": "Build DB Queries",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build DB Queries": {
+        "main": [
+          [
+            {
+              "node": "MySQL Upsert Bill",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MySQL Upsert Bill": {
+        "main": [
+          [
+            {
+              "node": "Mark Staging Done",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Mark Staging Done": {
+        "main": [
+          [
+            {
+              "node": "Loop Over Items",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MySQL Update Party Stats": {
+        "main": [
+          [
+            {
+              "node": "MySQL Update Congressman Stats",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MySQL Update Congressman Stats": {
+        "main": [
+          [
+            {
+              "node": "Build Success Notification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Success Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord Success",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build NoPending Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord NoPending",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "active": false,
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "versionId": "1"
+  }
+]

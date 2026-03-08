@@ -36,6 +36,12 @@ docker exec n8n n8n list:workflow
 정상 시 `workflow_id|name` 형식이 출력되어야 한다.  
 UI에서는 `workflows` 목록에서 이름 검색으로도 확인한다.
 
+### 반복 작업용 자동 임포트 스크립트
+- 변경 후 바로 반영하려면 아래 스크립트를 실행한다.
+```bash
+scripts/import_lawdigest_bills_pipeline.sh
+```
+
 ## 5) 실행/활성화
 - 등록만으로는 비활성일 수 있다.
 - UI에서 해당 워크플로우를 열어 `Active` 토글을 켜서 스케줄 실행을 시작한다.

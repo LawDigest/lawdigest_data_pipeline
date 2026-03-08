@@ -1,0 +1,1250 @@
+[
+  {
+    "updatedAt": "2026-03-04T12:40:22.605Z",
+    "createdAt": "2026-03-02T06:47:48.223Z",
+    "id": "VqZ4if5CN1vTtYhl",
+    "name": "lawdigest-bills-pipeline-v2",
+    "description": null,
+    "active": false,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "manual-trigger",
+        "name": "When clicking 'Execute workflow'",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [
+          -208,
+          528
+        ]
+      },
+      {
+        "parameters": {
+          "assignments": {
+            "assignments": [
+              {
+                "id": "start-date",
+                "name": "start_date",
+                "value": "={{ $moment().format('YYYY-MM-DD') }}",
+                "type": "string"
+              },
+              {
+                "id": "end-date",
+                "name": "end_date",
+                "value": "={{ $moment().format('YYYY-MM-DD') }}",
+                "type": "string"
+              },
+              {
+                "id": "age",
+                "name": "age",
+                "value": "22",
+                "type": "string"
+              },
+              {
+                "id": "run-id",
+                "name": "run_id",
+                "value": "={{ $moment().format('YYYYMMDD_HHmmss') }}",
+                "type": "string"
+              },
+              {
+                "id": "batch-size",
+                "name": "batch_size",
+                "value": 25,
+                "type": "number"
+              },
+              {
+                "id": "execution-mode",
+                "name": "execution_mode",
+                "value": "ai_test",
+                "type": "string"
+              },
+              {
+                "id": "discord-webhook-url",
+                "name": "discord_webhook_url",
+                "value": "=https://discord.com/api/webhooks/1388543340789628958/4wicluuB4mkFv4BoOZfmcR3uhPdxlbvGkOiUBWXWH4NhpRj_ngvIDCBnwYYoDZSIb4UK",
+                "type": "string"
+              },
+              {
+                "id": "gemini-model",
+                "name": "gemini_model",
+                "value": "gemini-3-flash-preview",
+                "type": "string"
+              },
+              {
+                "id": "gemini-api-key",
+                "name": "gemini_api_key",
+                "value": "={{ $env.GEMINI_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "openai-api-key",
+                "name": "openai_api_key",
+                "value": "={{ $env.OPENAI_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "service-key",
+                "name": "service_key",
+                "value": "={{ $env.APIKEY_DATAGOKR }}",
+                "type": "string"
+              },
+              {
+                "id": "langsmith-api-key",
+                "name": "langsmith_api_key",
+                "value": "={{ $env.LANGSMITH_API_KEY }}",
+                "type": "string"
+              },
+              {
+                "id": "langsmith-project",
+                "name": "langsmith_project",
+                "value": "={{ $env.LANGCHAIN_PROJECT || 'lawdigest-bills' }}",
+                "type": "string"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "set-context",
+        "name": "Set Context",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          16,
+          528
+        ]
+      },
+      {
+        "parameters": {
+          "language": "pythonNative",
+          "pythonCode": "import re\nimport urllib.parse\nimport urllib.request\nimport urllib.error\nfrom datetime import datetime, timedelta\nfrom html import unescape\n\nAPI_URL = 'https://apis.data.go.kr/9710000/BillInfoService2/getBillInfoList'\nPAGE_SIZE = 100\n\ninput_data = _items[0].get('json', {}) if _items else {}\n\n\ndef to_text(value, fallback=''):\n    if value is None:\n        return fallback\n    text = str(value).strip()\n    return text if text else fallback\n\n\ndef format_date(dt):\n    return dt.strftime('%Y-%m-%d')\n\n\nnow = datetime.now()\nstart_date = to_text(input_data.get('start_date'), format_date(now))\nend_date = to_text(input_data.get('end_date'), format_date(now))\nage = to_text(input_data.get('age'), '22')\n\nservice_key = to_text(\n    input_data.get('service_key')\n    or input_data.get('apiKey')\n    or input_data.get('API_KEY'),\n    ''\n)\n\n\ndef base_output():\n    out = dict(input_data)\n    out['start_date'] = start_date\n    out['end_date'] = end_date\n    out['age'] = age\n    return out\n\n\nif not service_key:\n    out = base_output()\n    out['error'] = 'Missing APIKEY_DATAGOKR'\n    out['bills'] = []\n    out['bill_count'] = 0\n    return [{'json': out}]\n\n\ndef extract_tag_text(xml_text, tag_name):\n    match = re.search(rf'<{tag_name}\\b[^>]*>([\\s\\S]*?)</{tag_name}>', xml_text, flags=re.IGNORECASE)\n    if not match:\n        return ''\n    return to_text(unescape(match.group(1)))\n\n\ndef parse_total_count(xml_text):\n    patterns = [\n        r'<totalCount>\\s*([0-9]+)\\s*</totalCount>',\n        r'<list_total_count>\\s*([0-9]+)\\s*</list_total_count>',\n    ]\n    for pattern in patterns:\n        match = re.search(pattern, xml_text, flags=re.IGNORECASE)\n        if match:\n            try:\n                return int(match.group(1))\n            except ValueError:\n                pass\n    return 0\n\n\ndef parse_bills_from_xml(xml_text):\n    bills = []\n    for match in re.finditer(r'<item\\b[^>]*>([\\s\\S]*?)</item>', xml_text, flags=re.IGNORECASE):\n        row = to_text(match.group(1))\n        if not row:\n            continue\n\n        bill = {\n            'proposeDate': extract_tag_text(row, 'proposeDt'),\n            'billId': extract_tag_text(row, 'billId'),\n            'billName': extract_tag_text(row, 'billName'),\n            'billNumber': extract_tag_text(row, 'billNo'),\n            'summary': extract_tag_text(row, 'summary'),\n            'stage': extract_tag_text(row, 'procStageCd'),\n            'proposerKind': extract_tag_text(row, 'proposerKind'),\n            'assemblyNumber': age,\n        }\n\n        if not bill['summary']:\n            continue\n        bills.append(bill)\n\n    return bills\n\n\ndef request_xml(url):\n    request = urllib.request.Request(\n        url,\n        headers={\n            'Accept': 'application/xml',\n            'User-Agent': 'lawdigest-bills-pipeline/1.0',\n        },\n    )\n\n    try:\n        with urllib.request.urlopen(request, timeout=30) as response:\n            try:\n                status = response.status\n            except Exception:\n                status = response.getcode()\n\n            try:\n                reason = response.reason\n            except Exception:\n                reason = ''\n\n            body = response.read().decode('utf-8', errors='ignore')\n            return {'status': status, 'statusText': str(reason), 'body': body}\n    except urllib.error.HTTPError as error:\n        body = ''\n        try:\n            body = error.read().decode('utf-8', errors='ignore')\n        except Exception:\n            pass\n        return {'status': error.code, 'statusText': str(error.reason), 'body': body}\n\n\ndef fetch_bills_page(page_no):\n    params = {\n        'serviceKey': service_key,\n        'pageNo': str(page_no),\n        'numOfRows': str(PAGE_SIZE),\n        'start_ord': age,\n        'end_ord': age,\n        'start_propose_date': start_date,\n        'end_propose_date': end_date,\n    }\n    query_string = urllib.parse.urlencode(params)\n    response = request_xml(f'{API_URL}?{query_string}')\n\n    if response['status'] < 200 or response['status'] >= 300:\n        snippet = to_text(response.get('body', '')[:300])\n        raise Exception(f\"API HTTP {response['status']} {response.get('statusText', 'unknown')} - {snippet}\")\n\n    xml_text = response.get('body', '')\n    return {\n        'totalCount': parse_total_count(xml_text),\n        'bills': parse_bills_from_xml(xml_text),\n    }\n\n\ntry:\n    bills = []\n    page_no = 1\n\n    first = fetch_bills_page(page_no)\n    total_count = first['totalCount'] or len(first['bills'])\n    bills.extend(first['bills'])\n\n    while len(bills) < total_count:\n        page_no += 1\n        nxt = fetch_bills_page(page_no)\n        if not nxt['bills']:\n            break\n        bills.extend(nxt['bills'])\n\n    out = base_output()\n    out['bills'] = bills\n    out['bill_count'] = len(bills)\n    return [{'json': out}]\nexcept Exception as error:\n    out = base_output()\n    out['error'] = str(error)\n    out['bills'] = []\n    out['bill_count'] = 0\n    return [{'json': out}]\n"
+        },
+        "id": "fetch-bills-raw",
+        "name": "Fetch Bills Raw",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          240,
+          528
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const modeRaw = String($json.execution_mode || 'prod').trim().toLowerCase();\nconst mode = ['prod', 'test', 'dry_run', 'ai_test'].includes(modeRaw) ? modeRaw : 'prod';\nlet bills = Array.isArray($json.bills) ? $json.bills : [];\nconst isDryRun = mode === 'dry_run';\nconst isAiTest = mode === 'ai_test';\nif (mode === 'test' || isDryRun || isAiTest) { bills = bills.slice(0, 5); }\nreturn [{\n  json: {\n    ...$json,\n    execution_mode: mode,\n    is_dry_run: isDryRun,\n    is_ai_test: isAiTest,\n    bills,\n    bill_count: bills.length\n  }\n}];"
+        },
+        "id": "apply-mode-controls",
+        "name": "Apply Mode Controls",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          672,
+          528
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "number": [
+              {
+                "value1": "={{$json.bill_count}}",
+                "operation": "larger"
+              }
+            ]
+          }
+        },
+        "id": "if-has-data",
+        "name": "Has Data?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          896,
+          528
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{$json.is_dry_run}}",
+                "value2": true
+              }
+            ]
+          }
+        },
+        "id": "if-dry-run",
+        "name": "Is Dry Run?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          1440,
+          528
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{$json.is_ai_test}}",
+                "value2": true
+              }
+            ]
+          }
+        },
+        "id": "if-ai-test",
+        "name": "Is AI Test?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          1168,
+          512
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "return [{\n  json: {\n    ...$json,\n    status: 'skipped',\n    reason: 'ai_test'\n  }\n}];"
+        },
+        "id": "ai-test-end",
+        "name": "AI Test End",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          4448,
+          960
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{ $('Set Context').first().json.execution_mode === 'ai_test' }}",
+                "value2": true
+              }
+            ]
+          }
+        },
+        "id": "if-ai-test-done",
+        "name": "Is AI Test Done?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          2864,
+          -128
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const ctx = $('Set Context').first().json;\n\nconst discordWebhookUrl = String(ctx.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\n\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\n\nreturn [\n{\n  json: {\n    ...ctx,\n    discord_webhook_url: discordWebhookUrl,\n    content:\n`🤖 [bills-v2 ai_test] completed\n- run_id: ${ctx.run_id || '-'}\n- mode: ${ctx.execution_mode || '-'}\n- range: ${ctx.start_date || '-'} ~ ${ctx.end_date || '-'}\n- age: ${ctx.age || '-'}\n- ai_processed: ${ctx.bill_count || 0}\n- db_update: skipped`\n  }\n}\n];"
+        },
+        "id": "notify-ai-test-payload",
+        "name": "Build AI Test Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3088,
+          -224
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[bills-v2] notification\") } }}",
+          "options": {}
+        },
+        "id": "notify-ai-test-discord",
+        "name": "Discord AI Test",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          3312,
+          -224
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif ($json.execution_mode === 'ai_test') return [];\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: `🧪 [bills-v2 dry-run\\n- run_id: ${$json.run_id || '-'}\\n- mode: ${$json.execution_mode || '-'}\\n- range: ${$json.start_date || '-'} ~ ${$json.end_date || '-'}\\n- age: ${$json.age || '-'}\\n- fetched_for_test: ${$json.bill_count || 0}`\n  }\n}];"
+        },
+        "id": "notify-dryrun-payload",
+        "name": "Build DryRun Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1760,
+          720
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[bills-v2] notification\") } }}",
+          "options": {}
+        },
+        "id": "notify-dryrun-discord",
+        "name": "Discord DryRun",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          2000,
+          720
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const bills = Array.isArray($json.bills) ? $json.bills : [];\nif (bills.length === 0) return [];\nreturn bills.map((bill) => ({ json: { ...$json, ...bill } }));"
+        },
+        "id": "explode-bills",
+        "name": "Explode Bills",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1760,
+          288
+        ]
+      },
+      {
+        "parameters": {
+          "dataType": "string",
+          "value1": "={{$json.proposerKind}}",
+          "rules": {
+            "rules": [
+              {
+                "value2": "의원"
+              },
+              {
+                "value2": "위원장"
+              },
+              {
+                "value2": "정부"
+              }
+            ]
+          },
+          "fallbackOutput": 3
+        },
+        "id": "switch-proposer-kind",
+        "name": "Switch Proposer Kind",
+        "type": "n8n-nodes-base.switch",
+        "typeVersion": 2,
+        "position": [
+          1984,
+          288
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "return [{ json: { ...$json, proposer_kind: 'CONGRESSMAN', proposer_kind_raw: '의원' } }];"
+        },
+        "id": "map-congressman",
+        "name": "Map Congressman Bill",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2208,
+          112
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "return [{ json: { ...$json, proposer_kind: 'CHAIRMAN', proposer_kind_raw: '위원장' } }];"
+        },
+        "id": "map-chairman",
+        "name": "Map Chairman Bill",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2208,
+          224
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "return [{ json: { ...$json, proposer_kind: 'CONGRESSMAN', proposer_kind_raw: '정부' } }];"
+        },
+        "id": "map-government",
+        "name": "Map Government Bill",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2208,
+          352
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "return [{ json: { ...$json, proposer_kind: 'CONGRESSMAN', proposer_kind_raw: '기타' } }];"
+        },
+        "id": "map-fallback",
+        "name": "Map Fallback Bill",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2208,
+          464
+        ]
+      },
+      {
+        "parameters": {
+          "numberInputs": 4
+        },
+        "id": "merge-proposer-branches",
+        "name": "Merge Proposer Branches",
+        "type": "n8n-nodes-base.merge",
+        "typeVersion": 3.2,
+        "position": [
+          2432,
+          288
+        ]
+      },
+      {
+        "parameters": {
+          "batchSize": "={{$json.batch_size || 25}}",
+          "options": {}
+        },
+        "id": "loop-items",
+        "name": "Loop Over Items",
+        "type": "n8n-nodes-base.splitInBatches",
+        "typeVersion": 3,
+        "position": [
+          2640,
+          288
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const title = $json.billName || '';\nconst summary = String($json.summary || '').slice(0, 12000);\nconst unified_prompt = `아래 법안을 JSON 형식으로 분석해줘.\n\n[법안명]\n${title}\n\n[본문]\n${summary}\n\n출력 형식:\n{\"briefSummary\":\"1문장 제목 (~하기 위한 \\\\${title} 형태로 끝남)\",\"gptSummary\":\"3~7개 항목 한국어 요약, 마지막 1문장 취지 정리\"}\n`;\nreturn [{ json: { ...$json, unified_prompt } }];"
+        },
+        "id": "build-ai-prompts",
+        "name": "Build AI Prompts",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          2864,
+          288
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{ $('Set Context').first().json.execution_mode === 'ai_test' }}",
+                "value2": true
+              }
+            ]
+          }
+        },
+        "id": "if-ai-test-db",
+        "name": "Skip DB for AI Test?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          4112,
+          752
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const toText = (v) => { if (v === undefined || v === null) return null; const t = String(v).trim(); return t.length ? t : null; };\nconst toInt = (v, d = 0) => { if (v === undefined || v === null || v === '') return d; const n = Number(String(v).replace(/,/g, '').trim()); return Number.isFinite(n) ? Math.trunc(n) : d; };\nconst sqlEscape = (v) => { if (v === undefined || v === null) return 'NULL'; const s = String(v).replace(/\\\\/g, '').replace(/'/g, \"''\"); return `'${s}'`; };\nconst billId = toText($json.billId);\nif (!billId) return [];\nconst billUpsertQuery = `INSERT INTO Bill (bill_id, bill_number, bill_name, propose_date, proposer_kind, summary, gpt_summary, brief_summary, committee, stage, bill_result, bill_pdf_url, bill_link, modified_date) VALUES (${sqlEscape(billId)}, ${toInt($json.billNumber)}, ${sqlEscape($json.billName)}, ${sqlEscape($json.proposeDate)}, 'CONGRESSMAN', ${sqlEscape($json.summary)}, ${sqlEscape($json.gptSummary)}, ${sqlEscape($json.briefSummary)}, ${sqlEscape($json.committee)}, ${sqlEscape($json.stage)}, ${sqlEscape($json.billResult)}, ${sqlEscape($json.billPdfUrl)}, ${sqlEscape($json.bill_link)}, NOW()) ON DUPLICATE KEY UPDATE modified_date=NOW();`;\nreturn [{ json: { ...$json, bill_upsert_query: billUpsertQuery } }];"
+        },
+        "id": "build-db-queries",
+        "name": "Build DB Queries",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3312,
+          736
+        ]
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "={{$json.bill_upsert_query}}",
+          "options": {
+            "queryBatching": "independently"
+          }
+        },
+        "id": "mysql-upsert-bill",
+        "name": "MySQL Upsert Bill",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          3552,
+          736
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "UPDATE Party SET modified_date = NOW();",
+          "options": {}
+        },
+        "id": "mysql-update-party-stats",
+        "name": "MySQL Update Party Stats",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          3088,
+          0
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "operation": "executeQuery",
+          "query": "UPDATE Congressman SET modified_date = NOW();",
+          "options": {}
+        },
+        "id": "mysql-update-congressman-stats",
+        "name": "MySQL Update Congressman Stats",
+        "type": "n8n-nodes-base.mySql",
+        "typeVersion": 2.5,
+        "position": [
+          3312,
+          0
+        ],
+        "credentials": {
+          "mySql": {
+            "id": "05R786e54mtmosP4",
+            "name": "MySQL account"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "if ($json.execution_mode === 'ai_test') return [];\nconst discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: '✅ [bills-v2] completed'\n  }\n}];"
+        },
+        "id": "notify-success-payload",
+        "name": "Build Success Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3536,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[bills-v2] notification\") } }}",
+          "options": {}
+        },
+        "id": "notify-success-discord",
+        "name": "Discord Success",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          3744,
+          0
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "if ($json.execution_mode === 'ai_test') return [];\nconst discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: 'ℹ️ [bills-v2] no data'\n  }\n}];"
+        },
+        "id": "notify-no-data-payload",
+        "name": "Build NoData Notification",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1280,
+          912
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{$json.discord_webhook_url}}",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[bills-v2] notification\") } }}",
+          "options": {}
+        },
+        "id": "notify-no-data-discord",
+        "name": "Discord NoData",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          1552,
+          912
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.smith.langchain.com/runs",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-api-key",
+                "value": "={{ $json.langsmith_api_key }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { id: $json.run_id + '_' + ($json.billId || 'unknown'), name: 'bill-ai-summary', run_type: 'llm', start_time: new Date().toISOString(), inputs: { prompt: $json.unified_prompt, billId: $json.billId, billName: $json.billName }, extra: { execution_mode: $json.execution_mode, pipeline_run_id: $json.run_id }, tags: ['lawdigest', 'bills'], project_name: $json.langsmith_project } }}",
+          "options": {}
+        },
+        "id": "langsmith-run-start",
+        "name": "LangSmith Run Start",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          2976,
+          288
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "={{ 'https://generativelanguage.googleapis.com/v1beta/models/' + ($json.gemini_model || 'gemini-2.5-flash') + ':generateContent?key=' + $json.gemini_api_key }}",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "googlePalmApi",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { contents: [{ parts: [{ text: $json.unified_prompt }] }], generationConfig: { responseMimeType: 'application/json', responseSchema: { type: 'object', properties: { briefSummary: { type: 'string' }, gptSummary: { type: 'string' } }, required: ['briefSummary', 'gptSummary'] }, temperature: 0.3, maxOutputTokens: 4096 } } }}",
+          "options": {}
+        },
+        "id": "call-gemini-unified",
+        "name": "Gemini Unified",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          3088,
+          288
+        ],
+        "credentials": {
+          "googlePalmApi": {
+            "id": "ytqq50zm8657lqsf",
+            "name": "Google Gemini API"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const src = $items('Build AI Prompts', 0, $itemIndex)[0].json;\nlet briefSummary = null, gptSummary = null;\ntry {\n  const parts = $json.candidates?.[0]?.content?.parts ?? [];\n  const raw = parts.map(p => p.text || '').join('').trim();\n  if (raw) { const p = JSON.parse(raw); briefSummary = p.briefSummary || null; gptSummary = p.gptSummary || null; }\n} catch(e) {}\nreturn [{ json: { ...src, briefSummary, gptSummary, needs_fallback: !briefSummary || !gptSummary } }];"
+        },
+        "id": "parse-gemini-unified",
+        "name": "Parse Gemini Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3312,
+          288
+        ]
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "boolean": [
+              {
+                "value1": "={{$json.needs_fallback}}",
+                "value2": true
+              }
+            ]
+          }
+        },
+        "id": "if-unified-fallback",
+        "name": "Need AI Fallback?",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 1,
+        "position": [
+          3520,
+          288
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://api.openai.com/v1/chat/completions",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Authorization",
+                "value": "={{ 'Bearer ' + $json.openai_api_key }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { model: 'gpt-4o-mini', messages: [{ role: 'user', content: $json.unified_prompt }], response_format: { type: 'json_schema', json_schema: { name: 'bill_summary', strict: true, schema: { type: 'object', properties: { briefSummary: { type: 'string' }, gptSummary: { type: 'string' } }, required: ['briefSummary', 'gptSummary'], additionalProperties: false } } }, temperature: 0.3, max_tokens: 4096 } }}",
+          "options": {}
+        },
+        "id": "call-gpt-unified",
+        "name": "GPT Unified Fallback",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          3312,
+          496
+        ],
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const src = $items('Parse Gemini Result', 0, $itemIndex)[0].json;\nlet { briefSummary, gptSummary } = src;\ntry {\n  const content = $json.choices?.[0]?.message?.content;\n  if (content) { const p = JSON.parse(content); briefSummary = p.briefSummary || briefSummary; gptSummary = p.gptSummary || gptSummary; }\n} catch(e) {}\nreturn [{ json: { ...src, briefSummary, gptSummary } }];"
+        },
+        "id": "parse-gpt-unified",
+        "name": "Parse GPT Result",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          3536,
+          496
+        ]
+      },
+      {
+        "parameters": {
+          "method": "PATCH",
+          "url": "={{ 'https://api.smith.langchain.com/runs/' + $json.run_id + '_' + ($json.billId || 'unknown') }}",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "x-api-key",
+                "value": "={{ $json.langsmith_api_key }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          },
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ { end_time: new Date().toISOString(), outputs: { briefSummary: $json.briefSummary, gptSummary: $json.gptSummary }, status: ($json.briefSummary && $json.gptSummary) ? 'success' : 'error' } }}",
+          "options": {}
+        },
+        "id": "langsmith-run-end",
+        "name": "LangSmith Run End",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4,
+        "position": [
+          3824,
+          400
+        ],
+        "continueOnFail": true
+      }
+    ],
+    "connections": {
+      "When clicking 'Execute workflow'": {
+        "main": [
+          [
+            {
+              "node": "Set Context",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Set Context": {
+        "main": [
+          [
+            {
+              "node": "Fetch Bills Raw",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Apply Mode Controls": {
+        "main": [
+          [
+            {
+              "node": "Has Data?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Has Data?": {
+        "main": [
+          [
+            {
+              "node": "Is AI Test?",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build NoData Notification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build NoData Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord NoData",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is Dry Run?": {
+        "main": [
+          [
+            {
+              "node": "Build DryRun Notification",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Explode Bills",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is AI Test?": {
+        "main": [
+          [
+            {
+              "node": "Explode Bills",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Is Dry Run?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build DryRun Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord DryRun",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Explode Bills": {
+        "main": [
+          [
+            {
+              "node": "Switch Proposer Kind",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Switch Proposer Kind": {
+        "main": [
+          [
+            {
+              "node": "Map Congressman Bill",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Map Chairman Bill",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Map Government Bill",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Map Fallback Bill",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Map Congressman Bill": {
+        "main": [
+          [
+            {
+              "node": "Merge Proposer Branches",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Map Chairman Bill": {
+        "main": [
+          [
+            {
+              "node": "Merge Proposer Branches",
+              "type": "main",
+              "index": 1
+            }
+          ]
+        ]
+      },
+      "Map Government Bill": {
+        "main": [
+          [
+            {
+              "node": "Merge Proposer Branches",
+              "type": "main",
+              "index": 2
+            }
+          ]
+        ]
+      },
+      "Map Fallback Bill": {
+        "main": [
+          [
+            {
+              "node": "Merge Proposer Branches",
+              "type": "main",
+              "index": 3
+            }
+          ]
+        ]
+      },
+      "Merge Proposer Branches": {
+        "main": [
+          [
+            {
+              "node": "Loop Over Items",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Loop Over Items": {
+        "main": [
+          [
+            {
+              "node": "Is AI Test Done?",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build AI Prompts",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build AI Prompts": {
+        "main": [
+          [
+            {
+              "node": "LangSmith Run Start",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Skip DB for AI Test?": {
+        "main": [
+          [
+            {
+              "node": "AI Test End",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Build DB Queries",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "AI Test End": {
+        "main": [
+          [
+            {
+              "node": "Loop Over Items",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build DB Queries": {
+        "main": [
+          [
+            {
+              "node": "MySQL Upsert Bill",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MySQL Upsert Bill": {
+        "main": [
+          [
+            {
+              "node": "Loop Over Items",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MySQL Update Party Stats": {
+        "main": [
+          [
+            {
+              "node": "MySQL Update Congressman Stats",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "MySQL Update Congressman Stats": {
+        "main": [
+          [
+            {
+              "node": "Build Success Notification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build Success Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord Success",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch Bills Raw": {
+        "main": [
+          [
+            {
+              "node": "Apply Mode Controls",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Is AI Test Done?": {
+        "main": [
+          [
+            {
+              "node": "Build AI Test Notification",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "MySQL Update Party Stats",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Build AI Test Notification": {
+        "main": [
+          [
+            {
+              "node": "Discord AI Test",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "LangSmith Run Start": {
+        "main": [
+          [
+            {
+              "node": "Gemini Unified",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Gemini Unified": {
+        "main": [
+          [
+            {
+              "node": "Parse Gemini Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Gemini Result": {
+        "main": [
+          [
+            {
+              "node": "Need AI Fallback?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Need AI Fallback?": {
+        "main": [
+          [
+            {
+              "node": "GPT Unified Fallback",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "LangSmith Run End",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "GPT Unified Fallback": {
+        "main": [
+          [
+            {
+              "node": "Parse GPT Result",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse GPT Result": {
+        "main": [
+          [
+            {
+              "node": "LangSmith Run End",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "LangSmith Run End": {
+        "main": [
+          [
+            {
+              "node": "Skip DB for AI Test?",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "settings": {
+      "executionOrder": "v1"
+    },
+    "staticData": null,
+    "meta": {
+      "templateCredsSetupCompleted": true
+    },
+    "pinData": {},
+    "versionId": "82531671-c02a-42ca-8188-d5b1cf24bdc6",
+    "activeVersionId": null,
+    "versionCounter": 185,
+    "triggerCount": 0,
+    "tags": [],
+    "shared": [
+      {
+        "updatedAt": "2026-03-02T06:47:48.228Z",
+        "createdAt": "2026-03-02T06:47:48.228Z",
+        "role": "workflow:owner",
+        "workflowId": "VqZ4if5CN1vTtYhl",
+        "projectId": "q2Pi2ovgycgdry5C",
+        "project": {
+          "updatedAt": "2026-03-02T06:47:02.939Z",
+          "createdAt": "2026-03-02T06:46:42.866Z",
+          "id": "q2Pi2ovgycgdry5C",
+          "name": "Minjae Park <parkmj9260@gmail.com>",
+          "type": "personal",
+          "icon": null,
+          "description": null,
+          "creatorId": "375e13c9-9e7d-4927-ab2f-232f7c9601e0"
+        }
+      }
+    ]
+  }
+]

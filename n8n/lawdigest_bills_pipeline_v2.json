@@ -9,8 +9,8 @@
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
-        220,
-        280
+        -208,
+        528
       ]
     },
     {
@@ -20,7 +20,7 @@
             {
               "id": "start-date",
               "name": "start_date",
-              "value": "={{ $moment().subtract(1, 'day').format('YYYY-MM-DD') }}",
+              "value": "={{ $moment().format('YYYY-MM-DD') }}",
               "type": "string"
             },
             {
@@ -50,7 +50,7 @@
             {
               "id": "execution-mode",
               "name": "execution_mode",
-              "value": "dry_run",
+              "value": "ai_test",
               "type": "string"
             },
             {
@@ -84,42 +84,43 @@
               "type": "string"
             }
           ]
-        }
+        },
+        "options": {}
       },
       "id": "set-context",
       "name": "Set Context",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
       "position": [
-        440,
-        280
+        16,
+        528
       ]
     },
     {
       "parameters": {
         "language": "pythonNative",
-        "pythonCode": "import re\nimport urllib.parse\nimport urllib.request\nimport urllib.error\nfrom datetime import datetime, timedelta\nfrom html import unescape\n\nAPI_URL = 'https://apis.data.go.kr/9710000/BillInfoService2/getBillInfoList'\nPAGE_SIZE = 100\n\ninput_data = _items[0].get('json', {}) if _items else {}\n\n\ndef to_text(value, fallback=''):\n    if value is None:\n        return fallback\n    text = str(value).strip()\n    return text if text else fallback\n\n\ndef format_date(dt):\n    return dt.strftime('%Y-%m-%d')\n\n\nnow = datetime.now()\nstart_date = to_text(input_data.get('start_date'), format_date(now - timedelta(days=1)))\nend_date = to_text(input_data.get('end_date'), format_date(now))\nage = to_text(input_data.get('age'), '22')\n\nservice_key = to_text(\n    input_data.get('service_key')\n    or input_data.get('apiKey')\n    or input_data.get('API_KEY'),\n    ''\n)\n\n\ndef base_output():\n    out = dict(input_data)\n    out['start_date'] = start_date\n    out['end_date'] = end_date\n    out['age'] = age\n    return out\n\n\nif not service_key:\n    out = base_output()\n    out['error'] = 'Missing APIKEY_DATAGOKR'\n    out['bills'] = []\n    out['bill_count'] = 0\n    return [{'json': out}]\n\n\ndef extract_tag_text(xml_text, tag_name):\n    match = re.search(rf'<{tag_name}\\b[^>]*>([\\s\\S]*?)</{tag_name}>', xml_text, flags=re.IGNORECASE)\n    if not match:\n        return ''\n    return to_text(unescape(match.group(1)))\n\n\ndef parse_total_count(xml_text):\n    patterns = [\n        r'<totalCount>\\s*([0-9]+)\\s*</totalCount>',\n        r'<list_total_count>\\s*([0-9]+)\\s*</list_total_count>',\n    ]\n    for pattern in patterns:\n        match = re.search(pattern, xml_text, flags=re.IGNORECASE)\n        if match:\n            try:\n                return int(match.group(1))\n            except ValueError:\n                pass\n    return 0\n\n\ndef parse_bills_from_xml(xml_text):\n    bills = []\n    for match in re.finditer(r'<item\\b[^>]*>([\\s\\S]*?)</item>', xml_text, flags=re.IGNORECASE):\n        row = to_text(match.group(1))\n        if not row:\n            continue\n\n        bill = {\n            'proposeDate': extract_tag_text(row, 'proposeDt'),\n            'billId': extract_tag_text(row, 'billId'),\n            'billName': extract_tag_text(row, 'billName'),\n            'billNumber': extract_tag_text(row, 'billNo'),\n            'summary': extract_tag_text(row, 'summary'),\n            'stage': extract_tag_text(row, 'procStageCd'),\n            'proposerKind': extract_tag_text(row, 'proposerKind'),\n            'assemblyNumber': age,\n        }\n\n        if not bill['summary']:\n            continue\n        bills.append(bill)\n\n    return bills\n\n\ndef request_xml(url):\n    request = urllib.request.Request(\n        url,\n        headers={\n            'Accept': 'application/xml',\n            'User-Agent': 'lawdigest-bills-pipeline/1.0',\n        },\n    )\n\n    try:\n        with urllib.request.urlopen(request, timeout=30) as response:\n            try:\n                status = response.status\n            except Exception:\n                status = response.getcode()\n\n            try:\n                reason = response.reason\n            except Exception:\n                reason = ''\n\n            body = response.read().decode('utf-8', errors='ignore')\n            return {'status': status, 'statusText': str(reason), 'body': body}\n    except urllib.error.HTTPError as error:\n        body = ''\n        try:\n            body = error.read().decode('utf-8', errors='ignore')\n        except Exception:\n            pass\n        return {'status': error.code, 'statusText': str(error.reason), 'body': body}\n\n\ndef fetch_bills_page(page_no):\n    params = {\n        'serviceKey': service_key,\n        'pageNo': str(page_no),\n        'numOfRows': str(PAGE_SIZE),\n        'start_ord': age,\n        'end_ord': age,\n        'start_propose_date': start_date,\n        'end_propose_date': end_date,\n    }\n    query_string = urllib.parse.urlencode(params)\n    response = request_xml(f'{API_URL}?{query_string}')\n\n    if response['status'] < 200 or response['status'] >= 300:\n        snippet = to_text(response.get('body', '')[:300])\n        raise Exception(f\"API HTTP {response['status']} {response.get('statusText', 'unknown')} - {snippet}\")\n\n    xml_text = response.get('body', '')\n    return {\n        'totalCount': parse_total_count(xml_text),\n        'bills': parse_bills_from_xml(xml_text),\n    }\n\n\ntry:\n    bills = []\n    page_no = 1\n\n    first = fetch_bills_page(page_no)\n    total_count = first['totalCount'] or len(first['bills'])\n    bills.extend(first['bills'])\n\n    while len(bills) < total_count:\n        page_no += 1\n        nxt = fetch_bills_page(page_no)\n        if not nxt['bills']:\n            break\n        bills.extend(nxt['bills'])\n\n    out = base_output()\n    out['bills'] = bills\n    out['bill_count'] = len(bills)\n    return [{'json': out}]\nexcept Exception as error:\n    out = base_output()\n    out['error'] = str(error)\n    out['bills'] = []\n    out['bill_count'] = 0\n    return [{'json': out}]\n"
+        "pythonCode": "import re\nimport urllib.parse\nimport urllib.request\nimport urllib.error\nfrom datetime import datetime, timedelta\nfrom html import unescape\n\nAPI_URL = 'https://apis.data.go.kr/9710000/BillInfoService2/getBillInfoList'\nPAGE_SIZE = 100\n\ninput_data = _items[0].get('json', {}) if _items else {}\n\n\ndef to_text(value, fallback=''):\n    if value is None:\n        return fallback\n    text = str(value).strip()\n    return text if text else fallback\n\n\ndef format_date(dt):\n    return dt.strftime('%Y-%m-%d')\n\n\nnow = datetime.now()\nstart_date = to_text(input_data.get('start_date'), format_date(now))\nend_date = to_text(input_data.get('end_date'), format_date(now))\nage = to_text(input_data.get('age'), '22')\n\nservice_key = to_text(\n    input_data.get('service_key')\n    or input_data.get('apiKey')\n    or input_data.get('API_KEY'),\n    ''\n)\n\n\ndef base_output():\n    out = dict(input_data)\n    out['start_date'] = start_date\n    out['end_date'] = end_date\n    out['age'] = age\n    return out\n\n\nif not service_key:\n    out = base_output()\n    out['error'] = 'Missing APIKEY_DATAGOKR'\n    out['bills'] = []\n    out['bill_count'] = 0\n    return [{'json': out}]\n\n\ndef extract_tag_text(xml_text, tag_name):\n    match = re.search(rf'<{tag_name}\\b[^>]*>([\\s\\S]*?)</{tag_name}>', xml_text, flags=re.IGNORECASE)\n    if not match:\n        return ''\n    return to_text(unescape(match.group(1)))\n\n\ndef parse_total_count(xml_text):\n    patterns = [\n        r'<totalCount>\\s*([0-9]+)\\s*</totalCount>',\n        r'<list_total_count>\\s*([0-9]+)\\s*</list_total_count>',\n    ]\n    for pattern in patterns:\n        match = re.search(pattern, xml_text, flags=re.IGNORECASE)\n        if match:\n            try:\n                return int(match.group(1))\n            except ValueError:\n                pass\n    return 0\n\n\ndef parse_bills_from_xml(xml_text):\n    bills = []\n    for match in re.finditer(r'<item\\b[^>]*>([\\s\\S]*?)</item>', xml_text, flags=re.IGNORECASE):\n        row = to_text(match.group(1))\n        if not row:\n            continue\n\n        bill = {\n            'proposeDate': extract_tag_text(row, 'proposeDt'),\n            'billId': extract_tag_text(row, 'billId'),\n            'billName': extract_tag_text(row, 'billName'),\n            'billNumber': extract_tag_text(row, 'billNo'),\n            'summary': extract_tag_text(row, 'summary'),\n            'stage': extract_tag_text(row, 'procStageCd'),\n            'proposerKind': extract_tag_text(row, 'proposerKind'),\n            'assemblyNumber': age,\n        }\n\n        if not bill['summary']:\n            continue\n        bills.append(bill)\n\n    return bills\n\n\ndef request_xml(url):\n    request = urllib.request.Request(\n        url,\n        headers={\n            'Accept': 'application/xml',\n            'User-Agent': 'lawdigest-bills-pipeline/1.0',\n        },\n    )\n\n    try:\n        with urllib.request.urlopen(request, timeout=30) as response:\n            try:\n                status = response.status\n            except Exception:\n                status = response.getcode()\n\n            try:\n                reason = response.reason\n            except Exception:\n                reason = ''\n\n            body = response.read().decode('utf-8', errors='ignore')\n            return {'status': status, 'statusText': str(reason), 'body': body}\n    except urllib.error.HTTPError as error:\n        body = ''\n        try:\n            body = error.read().decode('utf-8', errors='ignore')\n        except Exception:\n            pass\n        return {'status': error.code, 'statusText': str(error.reason), 'body': body}\n\n\ndef fetch_bills_page(page_no):\n    params = {\n        'serviceKey': service_key,\n        'pageNo': str(page_no),\n        'numOfRows': str(PAGE_SIZE),\n        'start_ord': age,\n        'end_ord': age,\n        'start_propose_date': start_date,\n        'end_propose_date': end_date,\n    }\n    query_string = urllib.parse.urlencode(params)\n    response = request_xml(f'{API_URL}?{query_string}')\n\n    if response['status'] < 200 or response['status'] >= 300:\n        snippet = to_text(response.get('body', '')[:300])\n        raise Exception(f\"API HTTP {response['status']} {response.get('statusText', 'unknown')} - {snippet}\")\n\n    xml_text = response.get('body', '')\n    return {\n        'totalCount': parse_total_count(xml_text),\n        'bills': parse_bills_from_xml(xml_text),\n    }\n\n\ntry:\n    bills = []\n    page_no = 1\n\n    first = fetch_bills_page(page_no)\n    total_count = first['totalCount'] or len(first['bills'])\n    bills.extend(first['bills'])\n\n    while len(bills) < total_count:\n        page_no += 1\n        nxt = fetch_bills_page(page_no)\n        if not nxt['bills']:\n            break\n        bills.extend(nxt['bills'])\n\n    out = base_output()\n    out['bills'] = bills\n    out['bill_count'] = len(bills)\n    return [{'json': out}]\nexcept Exception as error:\n    out = base_output()\n    out['error'] = str(error)\n    out['bills'] = []\n    out['bill_count'] = 0\n    return [{'json': out}]\n"
       },
       "id": "fetch-bills-raw",
       "name": "Fetch Bills Raw",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        660,
-        280
+        240,
+        528
       ]
     },
     {
       "parameters": {
-        "jsCode": "const modeRaw = String($json.execution_mode || 'prod').trim().toLowerCase();\nconst mode = ['prod', 'test', 'dry_run'].includes(modeRaw) ? modeRaw : 'prod';\nlet bills = Array.isArray($json.bills) ? $json.bills : [];\nif (mode === 'test' || mode === 'dry_run') { bills = bills.slice(0, 5); }\nreturn [{ json: { ...$json, execution_mode: mode, is_dry_run: mode === 'dry_run', bills, bill_count: bills.length } }];"
+        "jsCode": "const modeRaw = String($json.execution_mode || 'prod').trim().toLowerCase();\nconst mode = ['prod', 'test', 'dry_run', 'ai_test'].includes(modeRaw) ? modeRaw : 'prod';\nlet bills = Array.isArray($json.bills) ? $json.bills : [];\nconst isDryRun = mode === 'dry_run';\nconst isAiTest = mode === 'ai_test';\nif (mode === 'test' || isDryRun || isAiTest) { bills = bills.slice(0, 5); }\nreturn [{\n  json: {\n    ...$json,\n    execution_mode: mode,\n    is_dry_run: isDryRun,\n    is_ai_test: isAiTest,\n    bills,\n    bill_count: bills.length\n  }\n}];"
       },
       "id": "apply-mode-controls",
       "name": "Apply Mode Controls",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1100,
-        280
+        672,
+        528
       ]
     },
     {
@@ -128,8 +129,7 @@
           "number": [
             {
               "value1": "={{$json.bill_count}}",
-              "operation": "larger",
-              "value2": 0
+              "operation": "larger"
             }
           ]
         }
@@ -139,8 +139,8 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
       "position": [
-        1320,
-        280
+        896,
+        528
       ]
     },
     {
@@ -149,7 +149,6 @@
           "boolean": [
             {
               "value1": "={{$json.is_dry_run}}",
-              "operation": "equal",
               "value2": true
             }
           ]
@@ -160,13 +159,97 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
       "position": [
-        1540,
-        200
+        1440,
+        528
       ]
     },
     {
       "parameters": {
-        "jsCode": "const discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: `🧪 [bills-v2 dry-run\\n- run_id: ${$json.run_id || '-'}\\n- mode: ${$json.execution_mode || '-'}\\n- range: ${$json.start_date || '-'} ~ ${$json.end_date || '-'}\\n- age: ${$json.age || '-'}\\n- fetched_for_test: ${$json.bill_count || 0}`\n  }\n}];"
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.is_ai_test}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-ai-test",
+      "name": "Is AI Test?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        1168,
+        512
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    ...$json,\n    status: 'skipped',\n    reason: 'ai_test'\n  }\n}];"
+      },
+      "id": "ai-test-end",
+      "name": "AI Test End",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4544,
+        1184
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.is_ai_test}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-ai-test-done",
+      "name": "Is AI Test Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        2864,
+        -128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: `🤖 [bills-v2 ai_test] completed\\n- run_id: ${$json.run_id || '-'}\\n- mode: ${$json.execution_mode || '-'}\\n- range: ${$json.start_date || '-'} ~ ${$json.end_date || '-'}\\n- age: ${$json.age || '-'}\\n- ai_processed: ${$json.bill_count || 0}\\n- db_update: skipped`\n  }\n}];"
+      },
+      "id": "notify-ai-test-payload",
+      "name": "Build AI Test Notification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3088,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$json.discord_webhook_url}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[bills-v2] notification\") } }}",
+        "options": {}
+      },
+      "id": "notify-ai-test-discord",
+      "name": "Discord AI Test",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        3312,
+        -224
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif ($json.execution_mode === 'ai_test') return [];\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: `🧪 [bills-v2 dry-run\\n- run_id: ${$json.run_id || '-'}\\n- mode: ${$json.execution_mode || '-'}\\n- range: ${$json.start_date || '-'} ~ ${$json.end_date || '-'}\\n- age: ${$json.age || '-'}\\n- fetched_for_test: ${$json.bill_count || 0}`\n  }\n}];"
       },
       "id": "notify-dryrun-payload",
       "name": "Build DryRun Notification",
@@ -174,28 +257,25 @@
       "typeVersion": 2,
       "position": [
         1760,
-        100
+        720
       ]
     },
     {
       "parameters": {
-        "url": "={{$json.discord_webhook_url}}",
         "method": "POST",
-        "responseFormat": "json",
+        "url": "={{$json.discord_webhook_url}}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[bills-v2] notification\") } }}",
-        "options": {
-          "bodyContentType": "json"
-        }
+        "options": {}
       },
       "id": "notify-dryrun-discord",
       "name": "Discord DryRun",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        2020,
-        100
+        2000,
+        720
       ]
     },
     {
@@ -208,30 +288,23 @@
       "typeVersion": 2,
       "position": [
         1760,
-        280
+        288
       ]
     },
     {
       "parameters": {
-        "mode": "rules",
         "dataType": "string",
         "value1": "={{$json.proposerKind}}",
         "rules": {
           "rules": [
             {
-              "operation": "equal",
-              "value2": "의원",
-              "output": 0
+              "value2": "의원"
             },
             {
-              "operation": "equal",
-              "value2": "위원장",
-              "output": 1
+              "value2": "위원장"
             },
             {
-              "operation": "equal",
-              "value2": "정부",
-              "output": 2
+              "value2": "정부"
             }
           ]
         },
@@ -242,8 +315,8 @@
       "type": "n8n-nodes-base.switch",
       "typeVersion": 2,
       "position": [
-        1980,
-        280
+        1984,
+        288
       ]
     },
     {
@@ -255,8 +328,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2200,
-        100
+        2208,
+        112
       ]
     },
     {
@@ -268,8 +341,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2200,
-        220
+        2208,
+        224
       ]
     },
     {
@@ -281,8 +354,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2200,
-        340
+        2208,
+        352
       ]
     },
     {
@@ -294,13 +367,12 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2200,
-        460
+        2208,
+        464
       ]
     },
     {
       "parameters": {
-        "mode": "append",
         "numberInputs": 4
       },
       "id": "merge-proposer-branches",
@@ -308,13 +380,14 @@
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [
-        2420,
-        280
+        2432,
+        288
       ]
     },
     {
       "parameters": {
-        "batchSize": "={{$json.batch_size || 25}}"
+        "batchSize": "={{$json.batch_size || 25}}",
+        "options": {}
       },
       "id": "loop-items",
       "name": "Loop Over Items",
@@ -322,7 +395,7 @@
       "typeVersion": 3,
       "position": [
         2640,
-        280
+        288
       ]
     },
     {
@@ -334,50 +407,62 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2860,
-        280
+        2864,
+        288
       ]
     },
     {
       "parameters": {
-        "url": "={{ \"https://generativelanguage.googleapis.com/v1beta/models/\" + ($json.gemini_model || \"gemini-3-flash-preview\") + \":generateContent\" }}",
-        "method": "POST",
-        "responseFormat": "json",
-        "jsonParameters": true,
-        "options": {
-          "bodyContentType": "json"
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "mode": "id",
+          "value": "={{ 'models/' + ($json.gemini_model || 'gemini-2.5-flash') }}"
         },
-        "queryParametersUi": {
-          "parameter": [
+        "messages": {
+          "values": [
             {
-              "name": "key",
-              "value": "={{$json.gemini_api_key}}"
+              "content": "={{$json.title_prompt}}",
+              "role": "user"
             }
           ]
         },
-        "bodyParametersJson": "={\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"{{$json.title_prompt}}\"}]}],\"generationConfig\":{\"temperature\":0.2,\"topP\":0.8,\"topK\":20,\"maxOutputTokens\":1024}}"
+        "simplify": false,
+        "jsonOutput": false,
+        "options": {
+          "temperature": 0.2,
+          "topP": 0.8,
+          "topK": 20,
+          "maxOutputTokens": 1024
+        }
       },
       "id": "call-gemini-title",
       "name": "Gemini Title",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.1,
       "position": [
-        3080,
-        280
+        3088,
+        288
       ],
-      "continueOnFail": true
+      "continueOnFail": true,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ytqq50zm8657lqsf",
+          "name": "Google Gemini API"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "const src = $items('Build AI Prompts', 0, $itemIndex)[0].json;\nconst parts = ($json.candidates && $json.candidates[0] && $json.candidates[0].content && Array.isArray($json.candidates[0].content.parts)) ? $json.candidates[0].content.parts : [];\nconst text = parts.map((p) => p.text || '').join('\n').trim();\nreturn [{ json: { ...src, briefSummary: text || null, needs_title_fallback: !text } }];"
+        "jsCode": "const src = $items('Build AI Prompts', 0, $itemIndex)[0].json;\nconst parts = ($json.candidates && $json.candidates[0] && $json.candidates[0].content && Array.isArray($json.candidates[0].content.parts)) ? $json.candidates[0].content.parts : [];\nconst text = parts.map((p) => p.text || '').join('\\n').trim();\nreturn [{ json: { ...src, briefSummary: text || null, needs_title_fallback: !text } }];"
       },
       "id": "parse-gemini-title",
       "name": "Parse Gemini Title",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3300,
-        280
+        3312,
+        288
       ]
     },
     {
@@ -386,7 +471,6 @@
           "boolean": [
             {
               "value1": "={{$json.needs_title_fallback}}",
-              "operation": "equal",
               "value2": true
             }
           ]
@@ -398,31 +482,14 @@
       "typeVersion": 1,
       "position": [
         3520,
-        280
+        288
       ]
     },
     {
       "parameters": {
-        "url": "https://api.openai.com/v1/chat/completions",
         "method": "POST",
-        "responseFormat": "json",
-        "jsonParameters": true,
-        "options": {
-          "bodyContentType": "json"
-        },
-        "headerParametersUi": {
-          "parameter": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{$json.openai_api_key}}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "bodyParametersJson": "={\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"{{$json.title_prompt}}\"}],\"temperature\":0.2}"
+        "url": "https://api.openai.com/v1/chat/completions",
+        "options": {}
       },
       "id": "call-gpt-title",
       "name": "GPT Title Fallback",
@@ -430,7 +497,7 @@
       "typeVersion": 4,
       "position": [
         3520,
-        440
+        448
       ],
       "continueOnFail": true
     },
@@ -443,63 +510,72 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3740,
-        440
+        3744,
+        448
       ]
     },
     {
-      "parameters": {
-        "mode": "append",
-        "numberInputs": 2
-      },
+      "parameters": {},
       "id": "merge-title-result",
       "name": "Merge Title Result",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [
-        3960,
-        280
+        3968,
+        288
       ]
     },
     {
       "parameters": {
-        "url": "={{ \"https://generativelanguage.googleapis.com/v1beta/models/\" + ($json.gemini_model || \"gemini-3-flash-preview\") + \":generateContent\" }}",
-        "method": "POST",
-        "responseFormat": "json",
-        "jsonParameters": true,
-        "options": {
-          "bodyContentType": "json"
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "mode": "id",
+          "value": "={{ 'models/' + ($json.gemini_model || 'gemini-2.5-flash') }}"
         },
-        "queryParametersUi": {
-          "parameter": [
+        "messages": {
+          "values": [
             {
-              "name": "key",
-              "value": "={{$json.gemini_api_key}}"
+              "content": "={{$json.content_prompt}}",
+              "role": "user"
             }
           ]
         },
-        "bodyParametersJson": "={\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"{{$json.content_prompt}}\"}]}],\"generationConfig\":{\"temperature\":0.3,\"topP\":0.8,\"topK\":20,\"maxOutputTokens\":4096}}"
+        "simplify": false,
+        "jsonOutput": false,
+        "options": {
+          "temperature": 0.3,
+          "topP": 0.8,
+          "topK": 20,
+          "maxOutputTokens": 4096
+        }
       },
       "id": "call-gemini-content",
       "name": "Gemini Content",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.1,
       "position": [
-        3080,
+        3088,
         640
       ],
-      "continueOnFail": true
+      "continueOnFail": true,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ytqq50zm8657lqsf",
+          "name": "Google Gemini API"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "const src = $items('Merge Title Result', 0, $itemIndex)[0].json;\nconst parts = ($json.candidates && $json.candidates[0] && $json.candidates[0].content && Array.isArray($json.candidates[0].content.parts)) ? $json.candidates[0].content.parts : [];\nconst text = parts.map((p) => p.text || '').join('\n').trim();\nreturn [{ json: { ...src, gptSummary: text || null, needs_content_fallback: !text } }];"
+        "jsCode": "const src = $items('Merge Title Result', 0, $itemIndex)[0].json;\nconst parts = ($json.candidates && $json.candidates[0] && $json.candidates[0].content && Array.isArray($json.candidates[0].content.parts)) ? $json.candidates[0].content.parts : [];\nconst text = parts.map((p) => p.text || '').join('\\n').trim();\nreturn [{ json: { ...src, gptSummary: text || null, needs_content_fallback: !text } }];"
       },
       "id": "parse-gemini-content",
       "name": "Parse Gemini Content",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3300,
+        3312,
         640
       ]
     },
@@ -509,7 +585,6 @@
           "boolean": [
             {
               "value1": "={{$json.needs_content_fallback}}",
-              "operation": "equal",
               "value2": true
             }
           ]
@@ -526,26 +601,9 @@
     },
     {
       "parameters": {
-        "url": "https://api.openai.com/v1/chat/completions",
         "method": "POST",
-        "responseFormat": "json",
-        "jsonParameters": true,
-        "options": {
-          "bodyContentType": "json"
-        },
-        "headerParametersUi": {
-          "parameter": [
-            {
-              "name": "Authorization",
-              "value": "=Bearer {{$json.openai_api_key}}"
-            },
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "bodyParametersJson": "={\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"{{$json.content_prompt}}\"}],\"temperature\":0.3}"
+        "url": "https://api.openai.com/v1/chat/completions",
+        "options": {}
       },
       "id": "call-gpt-content",
       "name": "GPT Content Fallback",
@@ -566,35 +624,52 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3740,
+        3744,
         800
       ]
     },
     {
-      "parameters": {
-        "mode": "append",
-        "numberInputs": 2
-      },
+      "parameters": {},
       "id": "merge-content-result",
       "name": "Merge Content Result",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
       "position": [
-        3960,
+        3968,
         640
       ]
     },
     {
       "parameters": {
-        "jsCode": "const toText = (v) => { if (v === undefined || v === null) return null; const t = String(v).trim(); return t.length ? t : null; };\nconst toInt = (v, d = 0) => { if (v === undefined || v === null || v === '') return d; const n = Number(String(v).replace(/,/g, '').trim()); return Number.isFinite(n) ? Math.trunc(n) : d; };\nconst sqlEscape = (v) => { if (v === undefined || v === null) return 'NULL'; const s = String(v).replace(/\\/g, '').replace(/'/g, \"''\"); return `'${s}'`; };\nconst billId = toText($json.billId);\nif (!billId) return [];\nconst billUpsertQuery = `INSERT INTO Bill (bill_id, bill_number, bill_name, propose_date, proposer_kind, summary, gpt_summary, brief_summary, committee, stage, bill_result, bill_pdf_url, bill_link, modified_date) VALUES (${sqlEscape(billId)}, ${toInt($json.billNumber)}, ${sqlEscape($json.billName)}, ${sqlEscape($json.proposeDate)}, 'CONGRESSMAN', ${sqlEscape($json.summary)}, ${sqlEscape($json.gptSummary)}, ${sqlEscape($json.briefSummary)}, ${sqlEscape($json.committee)}, ${sqlEscape($json.stage)}, ${sqlEscape($json.billResult)}, ${sqlEscape($json.billPdfUrl)}, ${sqlEscape($json.bill_link)}, NOW()) ON DUPLICATE KEY UPDATE modified_date=NOW();`;\nreturn [{ json: { ...$json, bill_upsert_query: billUpsertQuery } }];"
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{$json.is_ai_test}}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "if-ai-test-db",
+      "name": "Skip DB for AI Test?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [
+        4240,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const toText = (v) => { if (v === undefined || v === null) return null; const t = String(v).trim(); return t.length ? t : null; };\nconst toInt = (v, d = 0) => { if (v === undefined || v === null || v === '') return d; const n = Number(String(v).replace(/,/g, '').trim()); return Number.isFinite(n) ? Math.trunc(n) : d; };\nconst sqlEscape = (v) => { if (v === undefined || v === null) return 'NULL'; const s = String(v).replace(/\\\\/g, '').replace(/'/g, \"''\"); return `'${s}'`; };\nconst billId = toText($json.billId);\nif (!billId) return [];\nconst billUpsertQuery = `INSERT INTO Bill (bill_id, bill_number, bill_name, propose_date, proposer_kind, summary, gpt_summary, brief_summary, committee, stage, bill_result, bill_pdf_url, bill_link, modified_date) VALUES (${sqlEscape(billId)}, ${toInt($json.billNumber)}, ${sqlEscape($json.billName)}, ${sqlEscape($json.proposeDate)}, 'CONGRESSMAN', ${sqlEscape($json.summary)}, ${sqlEscape($json.gptSummary)}, ${sqlEscape($json.briefSummary)}, ${sqlEscape($json.committee)}, ${sqlEscape($json.stage)}, ${sqlEscape($json.billResult)}, ${sqlEscape($json.billPdfUrl)}, ${sqlEscape($json.bill_link)}, NOW()) ON DUPLICATE KEY UPDATE modified_date=NOW();`;\nreturn [{ json: { ...$json, bill_upsert_query: billUpsertQuery } }];"
       },
       "id": "build-db-queries",
       "name": "Build DB Queries",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3080,
-        1000
+        3088,
+        1008
       ]
     },
     {
@@ -610,104 +685,118 @@
       "type": "n8n-nodes-base.mySql",
       "typeVersion": 2.5,
       "position": [
-        3300,
-        1000
-      ]
+        3312,
+        1008
+      ],
+      "credentials": {
+        "mySql": {
+          "id": "05R786e54mtmosP4",
+          "name": "MySQL account"
+        }
+      }
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE Party SET modified_date = NOW();"
+        "query": "UPDATE Party SET modified_date = NOW();",
+        "options": {}
       },
       "id": "mysql-update-party-stats",
       "name": "MySQL Update Party Stats",
       "type": "n8n-nodes-base.mySql",
       "typeVersion": 2.5,
       "position": [
-        2860,
-        40
-      ]
+        3088,
+        0
+      ],
+      "credentials": {
+        "mySql": {
+          "id": "05R786e54mtmosP4",
+          "name": "MySQL account"
+        }
+      }
     },
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "UPDATE Congressman SET modified_date = NOW();"
+        "query": "UPDATE Congressman SET modified_date = NOW();",
+        "options": {}
       },
       "id": "mysql-update-congressman-stats",
       "name": "MySQL Update Congressman Stats",
       "type": "n8n-nodes-base.mySql",
       "typeVersion": 2.5,
       "position": [
-        3080,
-        40
-      ]
+        3312,
+        0
+      ],
+      "credentials": {
+        "mySql": {
+          "id": "05R786e54mtmosP4",
+          "name": "MySQL account"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "const discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: '✅ [bills-v2] completed'\n  }\n}];"
+        "jsCode": "if ($json.execution_mode === 'ai_test') return [];\nconst discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: '✅ [bills-v2] completed'\n  }\n}];"
       },
       "id": "notify-success-payload",
       "name": "Build Success Notification",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        3300,
-        40
+        3536,
+        0
       ]
     },
     {
       "parameters": {
-        "url": "={{$json.discord_webhook_url}}",
         "method": "POST",
-        "responseFormat": "json",
+        "url": "={{$json.discord_webhook_url}}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[bills-v2] notification\") } }}",
-        "options": {
-          "bodyContentType": "json"
-        }
+        "options": {}
       },
       "id": "notify-success-discord",
       "name": "Discord Success",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        3520,
-        40
+        3744,
+        0
       ]
     },
     {
       "parameters": {
-        "jsCode": "const discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: 'ℹ️ [bills-v2] no data'\n  }\n}];"
+        "jsCode": "if ($json.execution_mode === 'ai_test') return [];\nconst discordWebhookUrl = String($json.discord_webhook_url || '').trim();\nconst isDefaultPlaceholder = /^YOUR_/i.test(discordWebhookUrl);\nif (!discordWebhookUrl || isDefaultPlaceholder) return [];\nreturn [{\n  json: {\n    ...$json,\n    discord_webhook_url: discordWebhookUrl,\n    content: 'ℹ️ [bills-v2] no data'\n  }\n}];"
       },
       "id": "notify-no-data-payload",
       "name": "Build NoData Notification",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1540,
-        440
+        1280,
+        912
       ]
     },
     {
       "parameters": {
-        "url": "={{$json.discord_webhook_url}}",
         "method": "POST",
-        "responseFormat": "json",
+        "url": "={{$json.discord_webhook_url}}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ { \"content\": ((String(($json && $json.content) || \"\").trim().length > 0) ? $json.content : \"[bills-v2] notification\") } }}",
-        "options": {
-          "bodyContentType": "json"
-        }
+        "options": {}
       },
       "id": "notify-no-data-discord",
       "name": "Discord NoData",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4,
       "position": [
-        1760,
-        440
+        1552,
+        912
       ]
     }
   ],
@@ -749,7 +838,7 @@
       "main": [
         [
           {
-            "node": "Is Dry Run?",
+            "node": "Is AI Test?",
             "type": "main",
             "index": 0
           }
@@ -786,6 +875,24 @@
         [
           {
             "node": "Explode Bills",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is AI Test?": {
+      "main": [
+        [
+          {
+            "node": "Explode Bills",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Dry Run?",
             "type": "main",
             "index": 0
           }
@@ -905,7 +1012,7 @@
       "main": [
         [
           {
-            "node": "MySQL Update Party Stats",
+            "node": "Is AI Test Done?",
             "type": "main",
             "index": 0
           }
@@ -1069,7 +1176,36 @@
       "main": [
         [
           {
+            "node": "Skip DB for AI Test?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip DB for AI Test?": {
+      "main": [
+        [
+          {
+            "node": "AI Test End",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Build DB Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Test End": {
+      "main": [
+        [
+          {
+            "node": "Loop Over Items",
             "type": "main",
             "index": 0
           }
@@ -1136,6 +1272,35 @@
         [
           {
             "node": "Apply Mode Controls",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is AI Test Done?": {
+      "main": [
+        [
+          {
+            "node": "Build AI Test Notification",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "MySQL Update Party Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Test Notification": {
+      "main": [
+        [
+          {
+            "node": "Discord AI Test",
             "type": "main",
             "index": 0
           }
